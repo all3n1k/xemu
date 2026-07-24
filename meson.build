@@ -809,6 +809,8 @@ endif
 if 'objc' in all_languages
   # Note sanitizer flags are not applied to Objective-C sources!
   add_project_arguments(objc.get_supported_arguments(warn_flags), native: false, language: 'objc')
+  # Enable Automatic Reference Counting for Objective-C sources (Metal backend).
+  add_project_arguments('-fobjc-arc', native: false, language: 'objc')
 endif
 if host_os == 'linux'
   add_project_arguments('-isystem', meson.current_source_dir() / 'linux-headers',
@@ -2698,6 +2700,15 @@ if numa.found()
 endif
 config_host_data.set('CONFIG_OPENGL', opengl.found())
 config_host_data.set('CONFIG_VULKAN', vulkan.found())
+# Metal renderer (macOS only). Always link when building on Darwin so the
+# backend is available even if opengl is unavailable.
+metal = not_found
+if host_os == 'darwin'
+  metal = declare_dependency(link_args: ['-framework', 'Metal',
+                                          '-framework', 'MetalKit',
+                                          '-framework', 'QuartzCore'])
+endif
+config_host_data.set('CONFIG_METAL', metal.found())
 config_host_data.set('CONFIG_PLUGIN', get_option('plugins'))
 config_host_data.set('CONFIG_RBD', rbd.found())
 config_host_data.set('CONFIG_RDMA', rdma.found())
@@ -3485,6 +3496,7 @@ host_kconfig = \
   (spice.found() ? ['CONFIG_SPICE=y'] : []) + \
   (have_ivshmem ? ['CONFIG_IVSHMEM=y'] : []) + \
   (opengl.found() ? ['CONFIG_OPENGL=y'] : []) + \
+  (metal.found() ? ['CONFIG_METAL=y'] : []) + \
   (libcbor.found() ? ['CONFIG_LIBCBOR=y'] : []) + \
   (gnutls.found() ? ['CONFIG_GNUTLS=y'] : []) + \
   (x11.found() ? ['CONFIG_X11=y'] : []) + \
@@ -4612,6 +4624,7 @@ foreach target : target_dirs
                  objects: objects,
                  include_directories: target_inc,
                  c_args: c_args,
+                 objc_args: c_args,
                  build_by_default: false)
 
   if target.endswith('-softmmu')

@@ -746,6 +746,9 @@ void MainMenuDisplayView::Draw()
 #ifdef CONFIG_VULKAN
                  "Vulkan\0"
 #endif
+#ifdef CONFIG_METAL
+                 "Metal\0"
+#endif
                  ,
                  "Select desired renderer implementation");
     int rendering_scale = nv2a_get_surface_scale_factor() - 1;

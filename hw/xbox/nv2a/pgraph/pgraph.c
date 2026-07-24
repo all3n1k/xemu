@@ -258,6 +258,11 @@ static CONFIG_DISPLAY_RENDERER get_default_renderer(void)
         return CONFIG_DISPLAY_RENDERER_OPENGL;
     }
 #endif
+#ifdef CONFIG_METAL
+    if (renderers[CONFIG_DISPLAY_RENDERER_METAL]) {
+        return CONFIG_DISPLAY_RENDERER_METAL;
+    }
+#endif
 #ifdef CONFIG_VULKAN
     if (renderers[CONFIG_DISPLAY_RENDERER_VULKAN]) {
         return CONFIG_DISPLAY_RENDERER_VULKAN;

@@ -38,6 +38,7 @@ typedef struct NV2AState NV2AState;
 typedef struct PGRAPHNullState PGRAPHNullState;
 typedef struct PGRAPHGLState PGRAPHGLState;
 typedef struct PGRAPHVkState PGRAPHVkState;
+typedef struct PGRAPHMetalState PGRAPHMetalState;
 
 typedef struct VertexAttribute {
     bool dma_select;
@@ -269,6 +270,7 @@ typedef struct PGRAPHState {
         PGRAPHNullState *null_renderer_state;
         PGRAPHGLState *gl_renderer_state;
         PGRAPHVkState *vk_renderer_state;
+        PGRAPHMetalState *metal_renderer_state;
     };
 } PGRAPHState;
 
