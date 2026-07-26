@@ -24,8 +24,15 @@
 
 #include "qemu/mstring.h"
 
+/*
+ * Emits the decoded instruction stream into `body`. The MAC/ILU macro and
+ * helper definitions it relies on go into `header` for GLSL; under `metal`
+ * they come from the shared MSL prologue instead, and the mutable register
+ * file is emitted into `body` since MSL has no mutable program-scope
+ * variables. The instruction stream itself is identical for both dialects.
+ */
 void pgraph_glsl_gen_vsh_prog(uint16_t version, const uint32_t *tokens,
                               unsigned int length, MString *header,
-                              MString *body);
+                              MString *body, bool metal);
 
 #endif

@@ -96,6 +96,7 @@ DECL_UNIFORM_TYPES(PshUniform, PSH_UNIFORM_DECL_X)
 
 typedef struct GenPshGlslOptions {
     bool vulkan;
+    bool metal; /* emit Metal Shading Language instead of GLSL */
     int ubo_binding;
     int tex_binding;
 } GenPshGlslOptions;

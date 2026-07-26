@@ -21,6 +21,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/xbox/nv2a/pgraph/pgraph.h"
+#include "msl.h"
 #include "vsh.h"
 #include "vsh-ff.h"
 #include "vsh-prog.h"
@@ -160,14 +161,18 @@ void pgraph_glsl_set_vsh_state(PGRAPHState *pg, VshState *vsh)
 
 MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
 {
+    /* Inline vertex attribute values are only in the uniform block when some
+     * attribute actually sources from them and they are not being passed as
+     * push constants. */
+    bool skip_inline_value = !state->uniform_attrs ||
+                             opts.use_push_constants_for_uniform_attrs;
+
     MString *uniforms = mstring_new();
     const char *u = opts.vulkan ? "" : "uniform ";
     for (int i = 0; i < ARRAY_SIZE(VshUniformInfo); i++) {
         const UniformInfo *info = &VshUniformInfo[i];
         const char *type_str = uniform_element_type_to_str[info->type];
-        if (i == VshUniform_inlineValue &&
-            (!state->uniform_attrs ||
-             opts.use_push_constants_for_uniform_attrs)) {
+        if (i == VshUniform_inlineValue && skip_inline_value) {
             continue;
         }
         if (info->count == 1) {
@@ -179,14 +184,22 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
         }
     }
 
+    /* Dialect-neutral: these expand at their use sites inside the entry
+     * point, where `c` is in scope for both GLSL and MSL. */
     MString *header = mstring_from_str(
         GLSL_DEFINE(fogPlane, GLSL_C(NV_IGRAPH_XF_XFCTX_FOG))
         GLSL_DEFINE(texMat0, GLSL_C_MAT4(NV_IGRAPH_XF_XFCTX_T0MAT))
         GLSL_DEFINE(texMat1, GLSL_C_MAT4(NV_IGRAPH_XF_XFCTX_T1MAT))
         GLSL_DEFINE(texMat2, GLSL_C_MAT4(NV_IGRAPH_XF_XFCTX_T2MAT))
         GLSL_DEFINE(texMat3, GLSL_C_MAT4(NV_IGRAPH_XF_XFCTX_T3MAT))
+        "\n");
 
-        "\n"
+    /* MSL takes the equivalents of the following from the shared prologue in
+     * msl.c: the helpers are the same functions, and the NV2A output
+     * registers must be function-local because MSL has no mutable
+     * program-scope variables. */
+    if (!opts.metal) {
+        mstring_append(header,
         "#define FLOAT_MAX uintBitsToFloat(0x7F7FFFFFu)\n"
         "\n"
         "vec4 oPos = vec4(0.0,0.0,0.0,1.0);\n"
@@ -232,29 +245,37 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
         "  return trunc(pos * 16.0f) / 16.0f;\n"
         "}\n");
 
-    pgraph_glsl_get_vtx_header(header, opts.vulkan, state->smooth_shading,
-                               false, opts.prefix_outputs, false);
+        pgraph_glsl_get_vtx_header(header, opts.vulkan, state->smooth_shading,
+                                   false, opts.prefix_outputs, false);
 
-    if (opts.prefix_outputs) {
-        mstring_append(header,
-                       "#define vtxD0 v_vtxD0\n"
-                       "#define vtxD1 v_vtxD1\n"
-                       "#define vtxB0 v_vtxB0\n"
-                       "#define vtxB1 v_vtxB1\n"
-                       "#define vtxFog v_vtxFog\n"
-                       "#define vtxT0 v_vtxT0\n"
-                       "#define vtxT1 v_vtxT1\n"
-                       "#define vtxT2 v_vtxT2\n"
-                       "#define vtxT3 v_vtxT3\n"
-                       "#define vtxPos0 v_vtxPos0\n"
-                       "#define vtxPos1 v_vtxPos1\n"
-                       "#define vtxPos2 v_vtxPos2\n"
-                       "#define triMZ v_triMZ\n"
-                       );
+        if (opts.prefix_outputs) {
+            mstring_append(header,
+                           "#define vtxD0 v_vtxD0\n"
+                           "#define vtxD1 v_vtxD1\n"
+                           "#define vtxB0 v_vtxB0\n"
+                           "#define vtxB1 v_vtxB1\n"
+                           "#define vtxFog v_vtxFog\n"
+                           "#define vtxT0 v_vtxT0\n"
+                           "#define vtxT1 v_vtxT1\n"
+                           "#define vtxT2 v_vtxT2\n"
+                           "#define vtxT3 v_vtxT3\n"
+                           "#define vtxPos0 v_vtxPos0\n"
+                           "#define vtxPos1 v_vtxPos1\n"
+                           "#define vtxPos2 v_vtxPos2\n"
+                           "#define triMZ v_triMZ\n"
+                           );
+        }
+        mstring_append(header, "\n");
     }
-    mstring_append(header, "\n");
 
     int num_uniform_attrs = 0;
+
+    /* Vertex attributes. GLSL declares them at program scope; MSL gathers the
+     * hardware-fed ones into a [[stage_in]] struct and materializes every
+     * attribute as a local, so the generated body refers to `v0`..`v15`
+     * identically in both dialects. */
+    MString *attr_members = mstring_new(); /* MSL [[stage_in]] struct */
+    MString *attr_locals = mstring_new();  /* MSL entry point locals */
 
     for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
         bool is_uniform = state->uniform_attrs & (1 << i);
@@ -265,16 +286,36 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
         assert(!(is_uniform && is_swizzled));
 
         if (is_uniform) {
-            mstring_append_fmt(header, "vec4 v%d = inlineValue[%d];\n", i,
+            mstring_append_fmt(opts.metal ? attr_locals : header,
+                               "  vec4 v%d = inlineValue[%d];\n", i,
                                num_uniform_attrs);
             num_uniform_attrs += 1;
-        } else {
-            if (state->compressed_attrs & (1 << i)) {
+        } else if (is_compressed) {
+            if (opts.metal) {
+                mstring_append_fmt(attr_members,
+                                   "  int v%d_cmp [[attribute(%d)]];\n", i, i);
+                mstring_append_fmt(
+                    attr_locals,
+                    "  vec4 v%d = decompress_11_11_10(in.v%d_cmp);\n", i, i);
+            } else {
                 mstring_append_fmt(header,
                                    "layout(location = %d) in int v%d_cmp;\n", i, i);
-            } else if (state->swizzle_attrs & (1 << i)) {
+            }
+        } else if (is_swizzled) {
+            if (opts.metal) {
+                mstring_append_fmt(attr_members,
+                                   "  float4 v%d_sw [[attribute(%d)]];\n", i, i);
+                mstring_append_fmt(attr_locals,
+                                   "  vec4 v%d = in.v%d_sw.bgra;\n", i, i);
+            } else {
                 mstring_append_fmt(header, "layout(location = %d) in vec4 v%d_sw;\n",
                                    i, i);
+            }
+        } else {
+            if (opts.metal) {
+                mstring_append_fmt(attr_members,
+                                   "  float4 v%d [[attribute(%d)]];\n", i, i);
+                mstring_append_fmt(attr_locals, "  vec4 v%d = in.v%d;\n", i, i);
             } else {
                 mstring_append_fmt(header, "layout(location = %d) in vec4 v%d;\n",
                                    i, i);
@@ -284,18 +325,31 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
 
     mstring_append(header, "\n");
 
-    MString *body = mstring_from_str("void main() {\n");
+    MString *body;
 
-    for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
-        if (state->compressed_attrs & (1 << i)) {
-            mstring_append_fmt(
-                body, "vec4 v%d = decompress_11_11_10(v%d_cmp);\n", i, i);
+    if (opts.metal) {
+        body = mstring_new();
+        mstring_append(body, "  VshOut out;\n\n");
+        pgraph_msl_gen_uniform_locals(body, VshUniformInfo,
+                                      ARRAY_SIZE(VshUniformInfo),
+                                      skip_inline_value ? VshUniform_inlineValue
+                                                        : -1);
+        mstring_append(body, pgraph_msl_vsh_output_regs());
+        mstring_append(body, mstring_get_str(attr_locals));
+        mstring_append(body, "\n");
+    } else {
+        body = mstring_from_str("void main() {\n");
+
+        for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
+            if (state->compressed_attrs & (1 << i)) {
+                mstring_append_fmt(
+                    body, "vec4 v%d = decompress_11_11_10(v%d_cmp);\n", i, i);
+            }
+
+            if (state->swizzle_attrs & (1 << i)) {
+                mstring_append_fmt(body, "vec4 v%d = v%d_sw.bgra;\n", i, i);
+            }
         }
-
-        if (state->swizzle_attrs & (1 << i)) {
-            mstring_append_fmt(body, "vec4 v%d = v%d_sw.bgra;\n", i, i);
-        }
-
     }
 
     if (state->is_fixed_function) {
@@ -303,7 +357,7 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
     } else {
         pgraph_glsl_gen_vsh_prog(
             VSH_VERSION_XVS, (uint32_t *)state->programmable.program_data,
-            state->programmable.program_length, header, body);
+            state->programmable.program_length, header, body, opts.metal);
         if (!state->point_params_enable) {
             mstring_append_fmt(body, "  oPts.x = %f * %d;\n",
                                state->point_size <= 0.f ? 1.f :
@@ -397,6 +451,14 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
         // clang-format on
     }
 
+    if (opts.metal) {
+        /* The interpolants are struct members under MSL. Declaring them as
+         * locals first keeps the assignments below identical across
+         * dialects; they are packed into the output struct at the end. */
+        mstring_append(body, "\n");
+        pgraph_msl_gen_vtx_out_locals(body);
+    }
+
     mstring_append(body, "\n"
                    "  vtxD0 = clamp(NaNToOne(oD0), 0.0, 1.0);\n"
                    "  vtxB0 = clamp(NaNToOne(oB0), 0.0, 1.0);\n"
@@ -409,8 +471,10 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
                    "  vtxPos1 = vtxPos;\n"
                    "  vtxPos2 = vtxPos;\n"
                    "  triMZ = 0.0;\n"
-                   "  gl_PointSize = oPts.x;\n"
     );
+
+    mstring_append(body, opts.metal ? "  out.nv2a_pointSize = oPts.x;\n"
+                                    : "  gl_PointSize = oPts.x;\n");
 
     if (state->specular_enable) {
         mstring_append(body,
@@ -431,7 +495,12 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
         );
     }
 
-    if (opts.vulkan) {
+    if (opts.metal) {
+        /* Metal clip space matches Vulkan/D3D: z in [0,1], no remap needed. */
+        mstring_append(body, "  out.nv2a_position = oPos;\n");
+        pgraph_msl_gen_vtx_out_pack(body);
+        mstring_append(body, "  return out;\n");
+    } else if (opts.vulkan) {
         mstring_append(body,
                    "  gl_Position = oPos;\n"
         );
@@ -442,6 +511,42 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
     }
 
     mstring_append(body, "}\n");
+
+    if (opts.metal) {
+        MString *msl = mstring_from_str(pgraph_msl_prologue());
+
+        if (!state->is_fixed_function) {
+            mstring_append(msl, pgraph_msl_vsh_prog_prologue());
+        }
+
+        pgraph_msl_gen_uniform_struct(msl, "VshUniforms", VshUniformInfo,
+                                      ARRAY_SIZE(VshUniformInfo),
+                                      skip_inline_value ? VshUniform_inlineValue
+                                                        : -1);
+
+        mstring_append(msl, "struct VshIn {\n");
+        mstring_append(msl, mstring_get_str(attr_members));
+        mstring_append(msl, "};\n\n");
+
+        pgraph_msl_gen_vtx_struct(msl, "VshOut", state->smooth_shading, true);
+
+        mstring_append(msl, mstring_get_str(header));
+
+        mstring_append_fmt(
+            msl,
+            "vertex VshOut main0(VshIn in [[stage_in]],\n"
+            "                    constant VshUniforms &U [[buffer(%d)]])\n"
+            "{\n",
+            MSL_UNIFORM_BUFFER_INDEX);
+        mstring_append(msl, mstring_get_str(body));
+
+        mstring_unref(attr_members);
+        mstring_unref(attr_locals);
+        mstring_unref(uniforms);
+        mstring_unref(header);
+        mstring_unref(body);
+        return msl;
+    }
 
     /* Return combined header + source */
     MString *output =
@@ -473,6 +578,10 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
 
     mstring_append(output, mstring_get_str(body));
     mstring_unref(body);
+
+    mstring_unref(attr_members);
+    mstring_unref(attr_locals);
+    mstring_unref(uniforms);
 
     return output;
 }

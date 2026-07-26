@@ -37,6 +37,7 @@
 #include "hw/xbox/nv2a/nv2a_int.h"
 #include "hw/xbox/nv2a/pgraph/pgraph.h"
 #include "renderer.h"
+#include "shaders.h"
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations of the (stub, for now) ops.                    */
@@ -128,6 +129,12 @@ static void pgraph_metal_init(NV2AState *d, Error **errp)
 
     fprintf(stderr, "Metal renderer initialized: %s\n",
             [[device name] UTF8String]);
+
+    /* Stage B: the draw path does not exist yet, so nothing would otherwise
+     * exercise the MSL generator. Compile a spread of representative shader
+     * states now so generator regressions surface here rather than as a
+     * blank screen once Stage C lands. */
+    pgraph_metal_shader_selftest(device, false);
 }
 
 static void pgraph_metal_finalize(NV2AState *d)

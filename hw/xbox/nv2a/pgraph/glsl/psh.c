@@ -29,6 +29,7 @@
 #include "qemu/osdep.h"
 #include "hw/xbox/nv2a/debug.h"
 #include "hw/xbox/nv2a/pgraph/pgraph.h"
+#include "msl.h"
 #include "psh.h"
 
 DEF_UNIFORM_INFO_ARR(PshUniform, PSH_UNIFORM_DECL_X)
@@ -272,7 +273,29 @@ struct PixelShader {
     char var_refs[32][32];
     int num_const_refs;
     char const_refs[32][32];
+
+    /* MSL only: texture type per stage, NULL if the stage takes no sampler.
+     * Metal binds textures and samplers as entry point parameters, so the set
+     * has to be known before the signature can be emitted. */
+    const char *msl_tex_type[4];
 };
+
+/* Map a GLSL sampler type to the corresponding MSL texture type. */
+static const char *msl_tex_type_for_sampler(const char *sampler_type)
+{
+    if (!strcmp(sampler_type, "sampler2D")) {
+        return "texture2d<float>";
+    }
+    if (!strcmp(sampler_type, "sampler3D")) {
+        return "texture3d<float>";
+    }
+    if (!strcmp(sampler_type, "samplerCube")) {
+        return "texturecube<float>";
+    }
+    fprintf(stderr, "No MSL texture type for sampler type %s\n", sampler_type);
+    assert(!"Unhandled sampler type for MSL");
+    return NULL;
+}
 
 static void add_var_ref(struct PixelShader *ps, const char *var)
 {
@@ -739,13 +762,13 @@ static void psh_append_shadowmap(const struct PixelShader *ps, int i, bool compa
         mstring_append_fmt(
             vars,
             "float t%d_max_depth;\n"
-            "if (t%d_depth.y > 0) {\n"
+            "if (t%d_depth.y > 0.0) {\n"
             "  t%d_max_depth = 0xFFFFFF;\n"
             "} else {\n"
-            "  t%d_max_depth = t%d_depth.z > 0 ? 511.9375 : 0xFFFF;\n"
+            "  t%d_max_depth = t%d_depth.z > 0.0 ? 511.9375 : 0xFFFF;\n"
             "}\n"
             "t%d_depth.x *= t%d_max_depth;\n"
-            "pT%d.z = clamp(pT%d.z / pT%d.w, 0, t%d_max_depth);\n"
+            "pT%d.z = clamp(pT%d.z / pT%d.w, 0.0, t%d_max_depth);\n"
             "vec4 t%d = vec4(t%d_depth.x %s pT%d.z ? 1.0 : 0.0);\n",
             i, i, i, i, i,
             i, i, i, i, i, i,
@@ -789,7 +812,7 @@ static void apply_convolution_filter(const struct PixelShader *ps, MString *vars
     mstring_append_fmt(vars,
         "vec4 t%d = vec4(0.0);\n"
         "for (int i = 0; i < 9; i++) {\n"
-        "    vec3 texCoordDelta = vec3(convolution3x3[i], 0);\n"
+        "    vec3 texCoordDelta = vec3(convolution3x3[i], 0.0);\n"
         "    texCoordDelta.xy /= textureSize(texSamp%d, 0);\n"
         "    t%d += textureProj(texSamp%d, %s(pT%d.xyw) + texCoordDelta) * gaussian3x3[i];\n"
         "}\n", tex, tex, tex, tex, tex_remap, tex);
@@ -811,30 +834,46 @@ static void define_colorkey_comparator(MString *preflight)
 static MString* psh_convert(struct PixelShader *ps)
 {
     MString *preflight = mstring_new();
-    pgraph_glsl_get_vtx_header(preflight, ps->opts.vulkan,
-                             ps->state->smooth_shading, true, false, false);
 
-    if (ps->opts.vulkan) {
-        mstring_append_fmt(
-            preflight,
-            "layout(location = 0) out vec4 fragColor;\n"
-            "layout(binding = %d, std140) uniform PshUniforms {\n",
-            ps->opts.ubo_binding);
+    if (ps->opts.metal) {
+        /* Interpolants and the fragment output are struct members under MSL;
+         * the uniform block becomes a constant-address-space struct. */
+        mstring_append(preflight, pgraph_msl_prologue());
+        pgraph_msl_gen_uniform_struct(preflight, "PshUniforms", PshUniformInfo,
+                                      ARRAY_SIZE(PshUniformInfo), -1);
+        pgraph_msl_gen_vtx_struct(preflight, "FragIn",
+                                  ps->state->smooth_shading, false);
+        mstring_append(preflight,
+                       "struct FragOut {\n"
+                       "  float4 color [[color(0)]];\n"
+                       "  float depth [[depth(any)]];\n"
+                       "};\n\n");
     } else {
-        mstring_append_fmt(preflight,
-                           "layout(location = 0) out vec4 fragColor;\n");
-    }
+        pgraph_glsl_get_vtx_header(preflight, ps->opts.vulkan,
+                                 ps->state->smooth_shading, true, false, false);
 
-    const char *u = ps->opts.vulkan ? "" : "uniform ";
-    for (int i = 0; i < ARRAY_SIZE(PshUniformInfo); i++) {
-        const UniformInfo *info = &PshUniformInfo[i];
-        const char *type_str = uniform_element_type_to_str[info->type];
-        if (info->count == 1) {
-            mstring_append_fmt(preflight, "%s%s %s;\n", u, type_str,
-                               info->name);
+        if (ps->opts.vulkan) {
+            mstring_append_fmt(
+                preflight,
+                "layout(location = 0) out vec4 fragColor;\n"
+                "layout(binding = %d, std140) uniform PshUniforms {\n",
+                ps->opts.ubo_binding);
         } else {
-            mstring_append_fmt(preflight, "%s%s %s[%zd];\n", u, type_str,
-                               info->name, info->count);
+            mstring_append_fmt(preflight,
+                               "layout(location = 0) out vec4 fragColor;\n");
+        }
+
+        const char *u = ps->opts.vulkan ? "" : "uniform ";
+        for (int i = 0; i < ARRAY_SIZE(PshUniformInfo); i++) {
+            const UniformInfo *info = &PshUniformInfo[i];
+            const char *type_str = uniform_element_type_to_str[info->type];
+            if (info->count == 1) {
+                mstring_append_fmt(preflight, "%s%s %s;\n", u, type_str,
+                                   info->name);
+            } else {
+                mstring_append_fmt(preflight, "%s%s %s[%zd];\n", u, type_str,
+                                   info->name, info->count);
+            }
         }
     }
 
@@ -875,8 +914,8 @@ static MString* psh_convert(struct PixelShader *ps)
         "               else return (x)/127.0;\n"
         "}\n"
         "float sign3_to_0_to_1(float x) {\n"
-        "    if (x >= 0) return x/2;\n"
-        "           else return 1+x/2;\n"
+        "    if (x >= 0.0) return x/2.0;\n"
+        "           else return 1.0+x/2.0;\n"
         "}\n"
         "vec3 dotmap_zero_to_one(vec4 col) {\n"
         "    return col.rgb;\n"
@@ -925,6 +964,20 @@ static MString* psh_convert(struct PixelShader *ps)
         "float area(vec2 a, vec2 b, vec2 c) {\n"
         "    return kahan_det(b - a, c - a);\n"
         "}\n"
+        );
+
+    /* Array declaration syntax is one of the few places the two dialects
+     * genuinely diverge; the contents are identical. */
+    mstring_append(preflight, ps->opts.metal ?
+        "constant float gaussian3x3[9] = {\n"
+        "    1.0/16.0, 2.0/16.0, 1.0/16.0,\n"
+        "    2.0/16.0, 4.0/16.0, 2.0/16.0,\n"
+        "    1.0/16.0, 2.0/16.0, 1.0/16.0};\n"
+        "constant vec2 convolution3x3[9] = {\n"
+        "    vec2(-1.0,-1.0),vec2(0.0,-1.0),vec2(1.0,-1.0),\n"
+        "    vec2(-1.0, 0.0),vec2(0.0, 0.0),vec2(1.0, 0.0),\n"
+        "    vec2(-1.0, 1.0),vec2(0.0, 1.0),vec2(1.0, 1.0)};\n"
+        :
         "const float[9] gaussian3x3 = float[9](\n"
         "    1.0/16.0, 2.0/16.0, 1.0/16.0,\n"
         "    2.0/16.0, 4.0/16.0, 2.0/16.0,\n"
@@ -932,7 +985,9 @@ static MString* psh_convert(struct PixelShader *ps)
         "const vec2[9] convolution3x3 = vec2[9](\n"
         "    vec2(-1.0,-1.0),vec2(0.0,-1.0),vec2(1.0,-1.0),\n"
         "    vec2(-1.0, 0.0),vec2(0.0, 0.0),vec2(1.0, 0.0),\n"
-        "    vec2(-1.0, 1.0),vec2(0.0, 1.0),vec2(1.0, 1.0));\n"
+        "    vec2(-1.0, 1.0),vec2(0.0, 1.0),vec2(1.0, 1.0));\n");
+
+    mstring_append(preflight,
         "vec2 remapCubeTo2D(vec3 texCoord) {\n"
         "    vec2 uv;\n"
         "    vec3 absTexCoord = abs(texCoord);\n"
@@ -1004,7 +1059,7 @@ static MString* psh_convert(struct PixelShader *ps)
     if (ps->state->z_perspective) {
         mstring_append(
             clip,
-            "vec2 unscaled_xy = gl_FragCoord.xy / surfaceScale;\n"
+            "vec2 unscaled_xy = gl_FragCoord.xy / vec2(surfaceScale);\n"
             "precise float bc0 = area(unscaled_xy, vtxPos1.xy, vtxPos2.xy);\n"
             "precise float bc1 = area(unscaled_xy, vtxPos2.xy, vtxPos0.xy);\n"
             "precise float bc2 = area(unscaled_xy, vtxPos0.xy, vtxPos1.xy);\n"
@@ -1038,7 +1093,7 @@ static MString* psh_convert(struct PixelShader *ps)
     } else {
         mstring_append(
             clip,
-            "vec2 unscaled_xy = gl_FragCoord.xy / surfaceScale;\n"
+            "vec2 unscaled_xy = gl_FragCoord.xy / vec2(surfaceScale);\n"
             "precise float bc0 = area(unscaled_xy, vtxPos1.xy, vtxPos2.xy);\n"
             "precise float bc1 = area(unscaled_xy, vtxPos2.xy, vtxPos0.xy);\n"
             "precise float bc2 = area(unscaled_xy, vtxPos0.xy, vtxPos1.xy);\n"
@@ -1218,15 +1273,16 @@ static MString* psh_convert(struct PixelShader *ps)
                                    i, ps->input_tex[i], ps->input_tex[i], ps->input_tex[i]);
             }
 
-            mstring_append_fmt(vars, "dsdtl%d.st = bumpMat[%d] * dsdtl%d.st;\n",
+            /* .xy rather than the .st alias: MSL has no stpq swizzle set. */
+            mstring_append_fmt(vars, "dsdtl%d.xy = bumpMat[%d] * dsdtl%d.xy;\n",
                                i, i, i);
 
             if (ps->state->dim_tex[i] == 2) {
-                mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, %s(pT%d.xy + dsdtl%d.st));\n",
+                mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, %s(pT%d.xy + dsdtl%d.xy));\n",
                     i, i, tex_remap, i, i);
             } else if (ps->state->dim_tex[i] == 3) {
                 // FIXME: Does hardware pass through the r/z coordinate or is it 0?
-                mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, vec3(pT%d.xy + dsdtl%d.st, pT%d.z));\n",
+                mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, vec3(pT%d.xy + dsdtl%d.xy, pT%d.z));\n",
                     i, i, i, i, i);
             } else {
                 fprintf(stderr, "Unhandled texture dimensions in BUMPENVMAP_LUM: stage=%d dim_tex=%d\n",
@@ -1234,7 +1290,7 @@ static MString* psh_convert(struct PixelShader *ps)
                 assert(!"Unhandled texture dimensions");
             }
 
-            mstring_append_fmt(vars, "t%d = t%d * (bumpScale[%d] * dsdtl%d.p + bumpOffset[%d]);\n",
+            mstring_append_fmt(vars, "t%d = t%d * (bumpScale[%d] * dsdtl%d.z + bumpOffset[%d]);\n",
                 i, i, i, i, i);
             break;
         case PS_TEXTUREMODES_BRDF:
@@ -1291,7 +1347,7 @@ static MString* psh_convert(struct PixelShader *ps)
                 i, i-2, i-1, i);
             mstring_append_fmt(vars, "vec3 e_%d = vec3(pT%d.w, pT%d.w, pT%d.w);\n",
                 i, i-2, i-1, i);
-            mstring_append_fmt(vars, "vec3 rv_%d = 2*n_%d*dot(n_%d,e_%d)/dot(n_%d,n_%d) - e_%d;\n",
+            mstring_append_fmt(vars, "vec3 rv_%d = 2.0*n_%d*dot(n_%d,e_%d)/dot(n_%d,n_%d) - e_%d;\n",
                 i, i, i, i, i, i, i);
             apply_border_adjustment(ps, vars, i, "rv_%d");
             if (!ps->state->tex_cubemap[i]) {
@@ -1369,10 +1425,17 @@ static MString* psh_convert(struct PixelShader *ps)
         }
 
         if (sampler_type != NULL) {
-            if (ps->opts.vulkan) {
-                mstring_append_fmt(preflight, "layout(binding = %d) ", ps->opts.tex_binding + i);
+            if (ps->opts.metal) {
+                /* Metal binds the texture and its sampler as separate entry
+                 * point parameters; the `texSampN` spelling used above is a
+                 * macro expanding to that pair, defined with the signature. */
+                ps->msl_tex_type[i] = msl_tex_type_for_sampler(sampler_type);
+            } else {
+                if (ps->opts.vulkan) {
+                    mstring_append_fmt(preflight, "layout(binding = %d) ", ps->opts.tex_binding + i);
+                }
+                mstring_append_fmt(preflight, "uniform %s texSamp%d;\n", sampler_type, i);
             }
-            mstring_append_fmt(preflight, "uniform %s texSamp%d;\n", sampler_type, i);
 
             /* As this means a texture fetch does happen, do alphakill */
             if (ps->state->alphakill[i]) {
@@ -1416,21 +1479,31 @@ static MString* psh_convert(struct PixelShader *ps)
             }
 
             if (ps->state->rect_tex[i]) {
-                mstring_append_fmt(preflight,
-                "vec2 norm%d(vec2 coord) {\n"
-                "    return coord / (textureSize(texSamp%d, 0) / texScale[%d]);\n"
-                "}\n",
-                i, i, i);
-                mstring_append_fmt(preflight,
-                "vec3 norm%d(vec3 coord) {\n"
-                "    return vec3(norm%d(coord.xy), coord.z);\n"
-                "}\n",
-                i, i);
-                mstring_append_fmt(preflight,
-                "vec4 norm%d(vec4 coord) {\n"
-                "    return vec4(norm%d(coord.xy), 0, coord.w);\n"
-                "}\n",
-                i, i);
+                if (ps->opts.metal) {
+                    /* A free function cannot reach the entry point's texture
+                     * parameters, so normN() is a macro binding them into the
+                     * overloaded helper from the prologue. */
+                    mstring_append_fmt(
+                        preflight,
+                        "#define norm%d(coord) msl_norm(coord, tex%d, texScale[%d])\n",
+                        i, i, i);
+                } else {
+                    mstring_append_fmt(preflight,
+                    "vec2 norm%d(vec2 coord) {\n"
+                    "    return coord / (textureSize(texSamp%d, 0) / texScale[%d]);\n"
+                    "}\n",
+                    i, i, i);
+                    mstring_append_fmt(preflight,
+                    "vec3 norm%d(vec3 coord) {\n"
+                    "    return vec3(norm%d(coord.xy), coord.z);\n"
+                    "}\n",
+                    i, i);
+                    mstring_append_fmt(preflight,
+                    "vec4 norm%d(vec4 coord) {\n"
+                    "    return vec4(norm%d(coord.xy), 0, coord.w);\n"
+                    "}\n",
+                    i, i);
+                }
             }
         }
     }
@@ -1518,13 +1591,60 @@ static MString* psh_convert(struct PixelShader *ps)
     }
 
     MString *final = mstring_new();
-    mstring_append_fmt(final, "#version %d\n\n", ps->opts.vulkan ? 450 : 400);
-    mstring_append(final, mstring_get_str(preflight));
-    mstring_append(final, "void main() {\n");
-    mstring_append(final, mstring_get_str(clip));
-    mstring_append(final, mstring_get_str(vars));
-    mstring_append(final, mstring_get_str(ps->code));
-    mstring_append(final, "}\n");
+
+    if (ps->opts.metal) {
+        mstring_append(final, mstring_get_str(preflight));
+
+        mstring_append_fmt(final,
+                           "fragment FragOut main0(FragIn in [[stage_in]],\n"
+                           "                       constant PshUniforms &U [[buffer(%d)]]",
+                           MSL_UNIFORM_BUFFER_INDEX);
+        for (int i = 0; i < 4; i++) {
+            if (ps->msl_tex_type[i]) {
+                mstring_append_fmt(final,
+                                   ",\n                       %s tex%d [[texture(%d)]]"
+                                   ",\n                       sampler smp%d [[sampler(%d)]]",
+                                   ps->msl_tex_type[i], i, i, i, i);
+            }
+        }
+        mstring_append(final, ")\n{\n");
+
+        /* Bind the GLSL builtin spellings the generated code uses to their
+         * Metal equivalents. texSampN is the texture/sampler pair the
+         * texture() overloads in the prologue expect. */
+        for (int i = 0; i < 4; i++) {
+            if (ps->msl_tex_type[i]) {
+                mstring_append_fmt(final, "#define texSamp%d tex%d, smp%d\n",
+                                   i, i, i);
+            }
+        }
+        mstring_append(final,
+                       "#define gl_FragCoord in.nv2a_position\n"
+                       "#define gl_PointCoord in.nv2a_pointCoord\n"
+                       "#define fragColor out.color\n"
+                       "#define gl_FragDepth out.depth\n"
+                       "\n"
+                       "  FragOut out;\n"
+                       "  out.color = float4(0.0);\n"
+                       "  out.depth = 0.0;\n\n");
+
+        pgraph_msl_gen_uniform_locals(final, PshUniformInfo,
+                                      ARRAY_SIZE(PshUniformInfo), -1);
+        pgraph_msl_gen_vtx_in_locals(final);
+
+        mstring_append(final, mstring_get_str(clip));
+        mstring_append(final, mstring_get_str(vars));
+        mstring_append(final, mstring_get_str(ps->code));
+        mstring_append(final, "  return out;\n}\n");
+    } else {
+        mstring_append_fmt(final, "#version %d\n\n", ps->opts.vulkan ? 450 : 400);
+        mstring_append(final, mstring_get_str(preflight));
+        mstring_append(final, "void main() {\n");
+        mstring_append(final, mstring_get_str(clip));
+        mstring_append(final, mstring_get_str(vars));
+        mstring_append(final, mstring_get_str(ps->code));
+        mstring_append(final, "}\n");
+    }
 
     mstring_unref(preflight);
     mstring_unref(vars);

@@ -1,6 +1,7 @@
 specific_ss.add([files(
 	'common.c',
 	'geom.c',
+	'msl.c',
 	'psh.c',
 	'shaders.c',
 	'vsh.c',

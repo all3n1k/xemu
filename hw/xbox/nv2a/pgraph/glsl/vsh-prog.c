@@ -34,6 +34,7 @@
 #include <assert.h>
 
 #include "common.h"
+#include "msl.h"
 #include "vsh.h"
 #include "vsh-prog.h"
 
@@ -725,10 +726,16 @@ static const char* vsh_header =
 
 void pgraph_glsl_gen_vsh_prog(uint16_t version, const uint32_t *tokens,
                               unsigned int length, MString *header,
-                              MString *body)
+                              MString *body, bool metal)
 {
-
-    mstring_append(header, vsh_header);
+    if (metal) {
+        /* Macros and helpers come from the shared MSL prologue; the register
+         * file must be function-local. R12 mirrors oPos in both dialects. */
+        mstring_append(header, "#define R12 oPos\n\n");
+        mstring_append(body, pgraph_msl_vsh_prog_locals());
+    } else {
+        mstring_append(header, vsh_header);
+    }
 
     bool has_final = false;
     int slot;
