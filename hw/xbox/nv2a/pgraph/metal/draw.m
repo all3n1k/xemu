@@ -269,6 +269,38 @@ static void bind_uniforms(PGRAPHState *pg, id<MTLRenderCommandEncoder> enc,
 
     upload_uniforms(vsh_buf, (const uint8_t *)&vsh_values, vsh_members,
                     VshUniform__COUNT);
+
+    if (getenv("XEMU_METAL_DUMP_UNIFORMS")) {
+        static int n;
+        if (n++ < 3) {
+            fprintf(stderr,
+                    "uniforms: surfaceSize=(%.1f,%.1f) clipRange=(%g,%g,%g,%g)\n"
+                    "  compositeMat c[0..3]:\n"
+                    "    %8.3f %8.3f %8.3f %8.3f\n"
+                    "    %8.3f %8.3f %8.3f %8.3f\n"
+                    "    %8.3f %8.3f %8.3f %8.3f\n"
+                    "    %8.3f %8.3f %8.3f %8.3f\n"
+                    "  psh: clipRegion[0]=(%d,%d,%d,%d) surfaceScale=(%d,%d)"
+                    " exclusive=%d alpha_test=%d\n",
+                    vsh_values.surfaceSize[0][0], vsh_values.surfaceSize[0][1],
+                    vsh_values.clipRange[0][0], vsh_values.clipRange[0][1],
+                    vsh_values.clipRange[0][2], vsh_values.clipRange[0][3],
+                    vsh_values.c[0][0], vsh_values.c[0][1],
+                    vsh_values.c[0][2], vsh_values.c[0][3],
+                    vsh_values.c[1][0], vsh_values.c[1][1],
+                    vsh_values.c[1][2], vsh_values.c[1][3],
+                    vsh_values.c[2][0], vsh_values.c[2][1],
+                    vsh_values.c[2][2], vsh_values.c[2][3],
+                    vsh_values.c[3][0], vsh_values.c[3][1],
+                    vsh_values.c[3][2], vsh_values.c[3][3],
+                    psh_values.clipRegion[0][0], psh_values.clipRegion[0][1],
+                    psh_values.clipRegion[0][2], psh_values.clipRegion[0][3],
+                    psh_values.surfaceScale[0][0],
+                    psh_values.surfaceScale[0][1],
+                    state->psh.window_clip_exclusive,
+                    state->psh.alpha_test);
+        }
+    }
     upload_uniforms(psh_buf, (const uint8_t *)&psh_values, psh_members,
                     PshUniform__COUNT);
 
@@ -328,6 +360,53 @@ static const char *debug_shader_src =
     "  Out o; o.pos = float4(p[vid % 3], 0.5, 1.0); return o;\n"
     "}\n"
     "fragment float4 dbg_fs() { return float4(1.0, 0.0, 1.0, 1.0); }\n";
+
+/*
+ * Generated vertex shader + constant-colour fragment shader. If shapes
+ * appear, the transform and vertex fetch are correct and the fault is in the
+ * generated fragment shader; if not, it is upstream of that.
+ */
+static id<MTLRenderPipelineState> get_hybrid_pipeline(PGRAPHMetalState *r,
+                                                      MetalShaderBinding *sb,
+                                                      MTLVertexDescriptor *vd)
+{
+    static id<MTLLibrary> lib;
+    NSError *err = nil;
+
+    if (lib == nil) {
+        lib = [r->device newLibraryWithSource:@(debug_shader_src)
+                                      options:nil
+                                        error:&err];
+        if (lib == nil) {
+            return nil;
+        }
+    }
+
+    MTLRenderPipelineDescriptor *pd =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    pd.vertexFunction = sb->vsh_function;
+    pd.fragmentFunction = [lib newFunctionWithName:@"dbg_fs"];
+    pd.vertexDescriptor = vd;
+    pd.colorAttachments[0].pixelFormat = r->color_binding->fmt.pixel_format;
+    pd.depthAttachmentPixelFormat =
+        r->zeta_binding ? r->zeta_binding->fmt.pixel_format
+                        : MTLPixelFormatDepth32Float;
+    if (r->zeta_binding && r->zeta_binding->fmt.stencil) {
+        pd.stencilAttachmentPixelFormat =
+            r->zeta_binding->fmt.pixel_format;
+    }
+
+    id<MTLRenderPipelineState> pso =
+        [r->device newRenderPipelineStateWithDescriptor:pd error:&err];
+    if (pso == nil) {
+        static int once;
+        if (!once++) {
+            fprintf(stderr, "nv2a: metal: hybrid pipeline failed: %s\n",
+                    [[err localizedDescription] UTF8String]);
+        }
+    }
+    return pso;
+}
 
 static id<MTLRenderPipelineState> get_debug_pipeline(PGRAPHMetalState *r)
 {
@@ -788,8 +867,12 @@ void pgraph_metal_draw_begin(NV2AState *d)
     id<MTLRenderPipelineState> pso;
     bool debug_shader = getenv("XEMU_METAL_DEBUG_SHADER") != NULL;
 
+    bool debug_fs = getenv("XEMU_METAL_DEBUG_FS") != NULL;
+
     if (debug_shader) {
         pso = get_debug_pipeline(r);
+    } else if (debug_fs && r->color_binding) {
+        pso = get_hybrid_pipeline(r, sb, vd);
     } else {
         pso = get_pipeline(d, sb, vd);
     }
