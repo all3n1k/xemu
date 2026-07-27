@@ -30,7 +30,14 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
+#include "qemu/queue.h"
+
+#include "hw/xbox/nv2a/nv2a_int.h"
+#include "hw/xbox/nv2a/nv2a_regs.h"
 #include "hw/xbox/nv2a/pgraph/pgraph.h"
+#include "hw/xbox/nv2a/pgraph/surface.h"
+
+typedef struct MetalSurfaceBinding MetalSurfaceBinding;
 
 /*
  * The Metal renderer state. This is the structural counterpart of
@@ -55,6 +62,17 @@ typedef struct PGRAPHMetalState {
 
     /* Stamp so callers can detect when device initialization finished. */
     bool                     initialized;
+
+    /* Render targets. Mirrors the GL backend's surface cache: bindings are
+     * keyed by guest VRAM address and kept until evicted or invalidated. */
+    QTAILQ_HEAD(, MetalSurfaceBinding) surfaces;
+    MetalSurfaceBinding      *color_binding;
+    MetalSurfaceBinding      *zeta_binding;
+    bool                     downloads_pending;
+    QemuEvent                downloads_complete;
+    bool                     download_dirty_surfaces_pending;
+    QemuEvent                dirty_surfaces_download_complete;
+
 } PGRAPHMetalState;
 
 #endif /* XEMU_NV2A_PGRAPH_METAL_RENDERER_H */

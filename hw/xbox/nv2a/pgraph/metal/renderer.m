@@ -38,6 +38,7 @@
 #include "hw/xbox/nv2a/pgraph/pgraph.h"
 #include "renderer.h"
 #include "shaders.h"
+#include "surface.h"
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations of the (stub, for now) ops.                    */
@@ -47,7 +48,6 @@ static void pgraph_metal_early_context_init(void);
 static void pgraph_metal_init(NV2AState *d, Error **errp);
 static void pgraph_metal_finalize(NV2AState *d);
 static void pgraph_metal_clear_report_value(NV2AState *d);
-static void pgraph_metal_clear_surface(NV2AState *d, uint32_t parameter);
 static void pgraph_metal_draw_begin(NV2AState *d);
 static void pgraph_metal_draw_end(NV2AState *d);
 static void pgraph_metal_flip_stall(NV2AState *d);
@@ -60,9 +60,6 @@ static void pgraph_metal_pre_shutdown_trigger(NV2AState *d);
 static void pgraph_metal_pre_shutdown_wait(NV2AState *d);
 static void pgraph_metal_process_pending(NV2AState *d);
 static void pgraph_metal_process_pending_reports(NV2AState *d);
-static void pgraph_metal_surface_update(NV2AState *d, bool upload,
-                                        bool color_write, bool zeta_write);
-static void pgraph_metal_surface_flush(NV2AState *d);
 static void pgraph_metal_set_surface_scale_factor(NV2AState *d,
                                                   unsigned int scale);
 static unsigned int pgraph_metal_get_surface_scale_factor(NV2AState *d);
@@ -127,6 +124,8 @@ static void pgraph_metal_init(NV2AState *d, Error **errp)
 
     pg->metal_renderer_state = r;
 
+    pgraph_metal_init_surfaces(pg);
+
     fprintf(stderr, "Metal renderer initialized: %s\n",
             [[device name] UTF8String]);
 
@@ -144,6 +143,8 @@ static void pgraph_metal_finalize(NV2AState *d)
     if (!r) {
         return;
     }
+
+    pgraph_metal_finalize_surfaces(pg);
 
     /* Release Objective-C retained objects. */
     r->display_texture = nil;
@@ -163,10 +164,6 @@ static void pgraph_metal_clear_report_value(NV2AState *d)
     /* TODO Stage B: end any in-flight occlusion query. */
 }
 
-static void pgraph_metal_clear_surface(NV2AState *d, uint32_t parameter)
-{
-    /* TODO Stage B: translate NV097_CLEAR_SURFACE_* to MTLClear* */
-}
 
 static void pgraph_metal_draw_begin(NV2AState *d)
 {
@@ -235,10 +232,20 @@ static void pgraph_metal_process_pending(NV2AState *d)
      * or flush requests so the rest of the pgraph state machine isn't
      * blocked.
      */
-    if (qatomic_read(&d->pgraph.sync_pending) ||
+    PGRAPHMetalState *r = d->pgraph.metal_renderer_state;
+
+    if (qatomic_read(&r->downloads_pending) ||
+        qatomic_read(&r->download_dirty_surfaces_pending) ||
+        qatomic_read(&d->pgraph.sync_pending) ||
         qatomic_read(&d->pgraph.flush_pending)) {
         qemu_mutex_unlock(&d->pfifo.lock);
         qemu_mutex_lock(&d->pgraph.lock);
+        if (qatomic_read(&r->downloads_pending)) {
+            pgraph_metal_process_pending_downloads(d);
+        }
+        if (qatomic_read(&r->download_dirty_surfaces_pending)) {
+            pgraph_metal_download_dirty_surfaces(d);
+        }
         if (qatomic_read(&d->pgraph.sync_pending)) {
             qatomic_set(&d->pgraph.sync_pending, false);
             qemu_event_set(&d->pgraph.sync_complete);
@@ -257,16 +264,6 @@ static void pgraph_metal_process_pending_reports(NV2AState *d)
     /* No zpass queries in flight in the stub. */
 }
 
-static void pgraph_metal_surface_update(NV2AState *d, bool upload,
-                                        bool color_write, bool zeta_write)
-{
-    /* TODO Stage B: bind/create render targets matching surface_shape. */
-}
-
-static void pgraph_metal_surface_flush(NV2AState *d)
-{
-    /* TODO Stage B: invalidate all surface bindings. */
-}
 
 static void pgraph_metal_set_surface_scale_factor(NV2AState *d,
                                                   unsigned int scale)
