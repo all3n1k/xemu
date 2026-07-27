@@ -36,8 +36,19 @@
 #include "hw/xbox/nv2a/nv2a_regs.h"
 #include "hw/xbox/nv2a/pgraph/pgraph.h"
 #include "hw/xbox/nv2a/pgraph/surface.h"
+#include "hw/xbox/nv2a/pgraph/glsl/shaders.h"
 
 typedef struct MetalSurfaceBinding MetalSurfaceBinding;
+
+/* A generated + compiled shader pair for one ShaderState. */
+typedef struct MetalShaderBinding {
+    ShaderState        state;
+    bool               valid;
+    id<MTLLibrary>     vsh_library;
+    id<MTLLibrary>     psh_library;
+    id<MTLFunction>    vsh_function;
+    id<MTLFunction>    psh_function;
+} MetalShaderBinding;
 
 /*
  * The Metal renderer state. This is the structural counterpart of
@@ -72,6 +83,12 @@ typedef struct PGRAPHMetalState {
     QemuEvent                downloads_complete;
     bool                     download_dirty_surfaces_pending;
     QemuEvent                dirty_surfaces_download_complete;
+
+    /* Shaders generated from live pgraph state, keyed on ShaderState. */
+    GHashTable               *shader_cache;
+    MetalShaderBinding       *shader_binding;
+    unsigned int             shader_gen_successes;
+    unsigned int             shader_gen_failures;
 
 } PGRAPHMetalState;
 

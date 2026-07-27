@@ -39,6 +39,7 @@
 #include "renderer.h"
 #include "shaders.h"
 #include "surface.h"
+#include "draw.h"
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations of the (stub, for now) ops.                    */
@@ -48,10 +49,7 @@ static void pgraph_metal_early_context_init(void);
 static void pgraph_metal_init(NV2AState *d, Error **errp);
 static void pgraph_metal_finalize(NV2AState *d);
 static void pgraph_metal_clear_report_value(NV2AState *d);
-static void pgraph_metal_draw_begin(NV2AState *d);
-static void pgraph_metal_draw_end(NV2AState *d);
 static void pgraph_metal_flip_stall(NV2AState *d);
-static void pgraph_metal_flush_draw(NV2AState *d);
 static void pgraph_metal_get_report(NV2AState *d, uint32_t parameter);
 static void pgraph_metal_image_blit(NV2AState *d);
 static void pgraph_metal_pre_savevm_trigger(NV2AState *d);
@@ -125,6 +123,7 @@ static void pgraph_metal_init(NV2AState *d, Error **errp)
     pg->metal_renderer_state = r;
 
     pgraph_metal_init_surfaces(pg);
+    pgraph_metal_init_shader_cache(pg);
 
     fprintf(stderr, "Metal renderer initialized: %s\n",
             [[device name] UTF8String]);
@@ -144,6 +143,8 @@ static void pgraph_metal_finalize(NV2AState *d)
         return;
     }
 
+    pgraph_metal_report_shader_stats(pg);
+    pgraph_metal_finalize_shader_cache(pg);
     pgraph_metal_finalize_surfaces(pg);
 
     /* Release Objective-C retained objects. */
@@ -165,16 +166,6 @@ static void pgraph_metal_clear_report_value(NV2AState *d)
 }
 
 
-static void pgraph_metal_draw_begin(NV2AState *d)
-{
-    /* TODO Stage B: set up render command encoder + pipeline state. */
-}
-
-static void pgraph_metal_draw_end(NV2AState *d)
-{
-    /* TODO Stage B: end encoder + dispatch draw. */
-}
-
 static void pgraph_metal_flip_stall(NV2AState *d)
 {
     /*
@@ -187,11 +178,6 @@ static void pgraph_metal_flip_stall(NV2AState *d)
      */
     qatomic_set(&d->pgraph.sync_pending, false);
     qemu_event_set(&d->pgraph.sync_complete);
-}
-
-static void pgraph_metal_flush_draw(NV2AState *d)
-{
-    /* TODO Stage B: encode + commit the draw command buffer. */
 }
 
 static void pgraph_metal_get_report(NV2AState *d, uint32_t parameter)
