@@ -934,6 +934,23 @@ void pgraph_metal_draw_end(NV2AState *d)
     pgraph_metal_set_surface_dirty(pg, color_write,
                                    depth_test || stencil_test);
 
+    if (getenv("XEMU_METAL_TARGET_STATS") && r->color_binding) {
+        static unsigned long tn;
+        if ((tn++ % 4000) == 0) {
+            fprintf(stderr,
+                    "draw-target: color @%08lx %ux%u (tex %lux%lu) aa=%u "
+                    "clip=%u,%u %ux%u\n",
+                    (unsigned long)r->color_binding->vram_addr,
+                    r->color_binding->width, r->color_binding->height,
+                    (unsigned long)r->color_binding->texture.width,
+                    (unsigned long)r->color_binding->texture.height,
+                    pg->surface_shape.anti_aliasing,
+                    pg->surface_shape.clip_x, pg->surface_shape.clip_y,
+                    pg->surface_shape.clip_width,
+                    pg->surface_shape.clip_height);
+        }
+    }
+
     if (getenv("XEMU_METAL_DRAW_STATS")) {
         static unsigned long n;
         if ((n++ % 20000) == 0) {

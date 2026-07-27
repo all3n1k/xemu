@@ -299,6 +299,18 @@ static int pgraph_metal_get_framebuffer_surface(NV2AState *d)
         return 0;
     }
 
+    if (getenv("XEMU_METAL_TARGET_STATS")) {
+        static unsigned long dn;
+        if ((dn++ % 200) == 0) {
+            fprintf(stderr,
+                    "display-target: scanout @%08lx -> surface @%08lx %ux%u\n",
+                    (unsigned long)(d->pcrtc.start +
+                                    vga_display_params.line_offset),
+                    (unsigned long)surface->vram_addr, surface->width,
+                    surface->height);
+        }
+    }
+
     surface->frame_time = pg->frame_time;
     surface->download_pending = true;
 
