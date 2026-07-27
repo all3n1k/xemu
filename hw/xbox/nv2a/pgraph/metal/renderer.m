@@ -41,6 +41,7 @@
 #include "surface.h"
 #include "draw.h"
 #include "vertex.h"
+#include "texture.h"
 
 /* ------------------------------------------------------------------ */
 /* Forward declarations of the (stub, for now) ops.                    */
@@ -126,6 +127,7 @@ static void pgraph_metal_init(NV2AState *d, Error **errp)
     pgraph_metal_init_surfaces(pg);
     pgraph_metal_init_shader_cache(pg);
     pgraph_metal_init_vertex(d);
+    pgraph_metal_init_textures(pg);
 
     fprintf(stderr, "Metal renderer initialized: %s\n",
             [[device name] UTF8String]);
@@ -148,6 +150,7 @@ static void pgraph_metal_finalize(NV2AState *d)
     pgraph_metal_report_shader_stats(pg);
     pgraph_metal_finalize_shader_cache(pg);
     pgraph_metal_finalize_vertex(pg);
+    pgraph_metal_finalize_textures(pg);
     pgraph_metal_finalize_surfaces(pg);
 
     /* Release Objective-C retained objects. */

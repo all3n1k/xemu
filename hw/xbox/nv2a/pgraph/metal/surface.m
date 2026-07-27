@@ -553,9 +553,10 @@ static void surface_download(NV2AState *d, MetalSurfaceBinding *surface,
                 }
             }
             fprintf(stderr,
-                    "fb-stats #%d: %ux%u  nonblack=%zu/%zu (%.1f%%)  "
+                    "fb-stats #%d: %ux%u @%08lx  nonblack=%zu/%zu (%.1f%%)  "
                     "varied=%s\n",
-                    n, surface->width, surface->height, nonblack, count,
+                    n, surface->width, surface->height,
+                    (unsigned long)surface->vram_addr, nonblack, count,
                     count ? 100.0 * nonblack / count : 0.0,
                     distinct_hint ? "yes" : "no");
         }

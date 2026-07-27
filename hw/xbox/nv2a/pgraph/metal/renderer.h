@@ -112,6 +112,14 @@ typedef struct PGRAPHMetalState {
      */
     id<MTLTexture>           scratch_depth;
 
+    /* Textures. */
+    GHashTable               *texture_cache;
+    GHashTable               *sampler_cache;
+    id<MTLTexture>           white_texture;
+    unsigned long            texture_uploads;
+    unsigned long            texture_unsupported;
+    bool                     reported_format[64];
+
     /* Uniform staging. setVertexBytes: caps at 4 KB and the vertex block
      * is larger than that, so it needs a real buffer. */
     id<MTLBuffer>            vsh_uniform_buffer;

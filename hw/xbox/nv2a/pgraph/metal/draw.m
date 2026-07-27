@@ -45,6 +45,7 @@
 #include "surface.h"
 #include "draw.h"
 #include "vertex.h"
+#include "texture.h"
 #include "hw/xbox/nv2a/pgraph/glsl/msl.h"
 
 static guint shader_state_hash(gconstpointer key)
@@ -887,6 +888,7 @@ void pgraph_metal_draw_begin(NV2AState *d)
     if (!debug_shader) {
         bind_uniforms(pg, r->encoder, &sb->state);
         pgraph_metal_bind_vertex_buffers(d, r->encoder);
+        pgraph_metal_bind_textures(d, r->encoder);
     }
 }
 
@@ -937,11 +939,12 @@ void pgraph_metal_draw_end(NV2AState *d)
         if ((n++ % 20000) == 0) {
             fprintf(stderr,
                     "draw-stats: ends=%lu issued=%lu expanded=%lu unsup_prim=%lu "
-                    "unsup_draw=%lu pipelines=%u/%u prim=%d\n",
+                    "unsup_draw=%lu pipelines=%u/%u tex=%lu/%lu prim=%d\n",
                     n, r->draws_issued, r->expanded_prims,
                     r->unsupported_prims,
                     r->unsupported_draws, r->pipeline_count,
-                    r->pipeline_failures, pg->primitive_mode);
+                    r->pipeline_failures, r->texture_uploads,
+                    r->texture_unsupported, pg->primitive_mode);
         }
     }
 }

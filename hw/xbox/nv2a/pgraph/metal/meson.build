@@ -5,6 +5,7 @@ specific_ss.add([metal, files(
 	'surface.m',
 	'draw.m',
 	'vertex.m',
+	'texture.m',
 	'shaders.m',
 	)])
 
