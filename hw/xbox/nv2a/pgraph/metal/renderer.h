@@ -90,6 +90,16 @@ typedef struct PGRAPHMetalState {
     unsigned int             shader_gen_successes;
     unsigned int             shader_gen_failures;
 
+    /* Vertex data. vram_buffer aliases guest VRAM zero-copy where possible. */
+    id<MTLBuffer>            vram_buffer;
+    bool                     vram_buffer_is_copy;
+    id<MTLBuffer>            const_attr_buffer;
+    id<MTLBuffer>            index_buffer;
+    size_t                   attr_buffer_offset[NV2A_VERTEXSHADER_ATTRIBUTES];
+    bool                     attr_is_constant[NV2A_VERTEXSHADER_ATTRIBUTES];
+
+    /* Pipeline states, keyed on shader + attachment + blend state. */
+    GHashTable               *pipeline_cache;
 } PGRAPHMetalState;
 
 #endif /* XEMU_NV2A_PGRAPH_METAL_RENDERER_H */
