@@ -272,10 +272,97 @@ static void bind_uniforms(PGRAPHState *pg, id<MTLRenderCommandEncoder> enc,
     upload_uniforms(psh_buf, (const uint8_t *)&psh_values, psh_members,
                     PshUniform__COUNT);
 
-    [enc setVertexBytes:vsh_buf length:vsh_size
-                atIndex:MSL_UNIFORM_BUFFER_INDEX];
-    [enc setFragmentBytes:psh_buf length:psh_size
-                  atIndex:MSL_UNIFORM_BUFFER_INDEX];
+    /*
+     * setVertexBytes:/setFragmentBytes: are limited to 4 KB. The vertex
+     * uniform block is ~6 KB (192 float4 constants alone are 3 KB), so it
+     * has to go through a real buffer or the binding is rejected and the
+     * shader reads nothing.
+     */
+    if (r->vsh_uniform_buffer == nil ||
+        r->vsh_uniform_buffer.length < vsh_size) {
+        r->vsh_uniform_buffer =
+            [r->device newBufferWithLength:vsh_size
+                                   options:MTLResourceStorageModeShared];
+    }
+    memcpy(r->vsh_uniform_buffer.contents, vsh_buf, vsh_size);
+    [enc setVertexBuffer:r->vsh_uniform_buffer
+                  offset:0
+                 atIndex:MSL_UNIFORM_BUFFER_INDEX];
+
+    if (psh_size <= 4096) {
+        [enc setFragmentBytes:psh_buf length:psh_size
+                      atIndex:MSL_UNIFORM_BUFFER_INDEX];
+    } else {
+        if (r->psh_uniform_buffer == nil ||
+            r->psh_uniform_buffer.length < psh_size) {
+            r->psh_uniform_buffer =
+                [r->device newBufferWithLength:psh_size
+                                       options:MTLResourceStorageModeShared];
+        }
+        memcpy(r->psh_uniform_buffer.contents, psh_buf, psh_size);
+        [enc setFragmentBuffer:r->psh_uniform_buffer
+                        offset:0
+                       atIndex:MSL_UNIFORM_BUFFER_INDEX];
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Debug pipeline (bisect aid).                                        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A shader pair that ignores every scrap of guest state and paints a large
+ * fixed triangle. Under XEMU_METAL_DEBUG_SHADER it replaces the generated
+ * pair, which splits the search space cleanly: if magenta appears, then
+ * pipeline creation, the encoder, attachments, rasterization and readback
+ * are all fine and the fault is in the generated shaders or their uniforms.
+ * If nothing appears, the fault is in that plumbing instead.
+ */
+static const char *debug_shader_src =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct Out { float4 pos [[position]]; };\n"
+    "vertex Out dbg_vs(uint vid [[vertex_id]]) {\n"
+    "  float2 p[3] = { float2(-0.9, -0.9), float2(0.9, -0.9),\n"
+    "                  float2(0.0,  0.9) };\n"
+    "  Out o; o.pos = float4(p[vid % 3], 0.5, 1.0); return o;\n"
+    "}\n"
+    "fragment float4 dbg_fs() { return float4(1.0, 0.0, 1.0, 1.0); }\n";
+
+static id<MTLRenderPipelineState> get_debug_pipeline(PGRAPHMetalState *r)
+{
+    static id<MTLRenderPipelineState> cached;
+    if (cached != nil || r->color_binding == NULL) {
+        return cached;
+    }
+
+    NSError *err = nil;
+    id<MTLLibrary> lib =
+        [r->device newLibraryWithSource:@(debug_shader_src)
+                                options:nil
+                                  error:&err];
+    if (lib == nil) {
+        fprintf(stderr, "nv2a: metal: debug shader failed: %s\n",
+                [[err localizedDescription] UTF8String]);
+        return nil;
+    }
+
+    MTLRenderPipelineDescriptor *pd =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    pd.vertexFunction = [lib newFunctionWithName:@"dbg_vs"];
+    pd.fragmentFunction = [lib newFunctionWithName:@"dbg_fs"];
+    pd.colorAttachments[0].pixelFormat =
+        r->color_binding->fmt.pixel_format;
+    pd.depthAttachmentPixelFormat =
+        r->zeta_binding ? r->zeta_binding->fmt.pixel_format
+                        : MTLPixelFormatDepth32Float;
+
+    cached = [r->device newRenderPipelineStateWithDescriptor:pd error:&err];
+    if (cached == nil) {
+        fprintf(stderr, "nv2a: metal: debug pipeline failed: %s\n",
+                [[err localizedDescription] UTF8String]);
+    }
+    return cached;
 }
 
 /* ------------------------------------------------------------------ */
@@ -413,12 +500,133 @@ static id<MTLDepthStencilState> get_depth_stencil_state(NV2AState *d)
                                                    : MTLCompareFunctionAlways;
     dsd.depthWriteEnabled = depth_write && r->zeta_binding != NULL;
 
+    /* Bisect aid: take depth out of the picture entirely. */
+    if (getenv("XEMU_METAL_DEPTH_ALWAYS")) {
+        dsd.depthCompareFunction = MTLCompareFunctionAlways;
+    }
+
     return [r->device newDepthStencilStateWithDescriptor:dsd];
 }
 
 /* ------------------------------------------------------------------ */
 /* Encoder.                                                            */
 /* ------------------------------------------------------------------ */
+
+
+/* ------------------------------------------------------------------ */
+/* Primitive expansion.                                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Metal has no fan, quad or line-loop primitives. The NV2A uses them heavily
+ * -- triangle fans alone were 38% of draws in a boot survey -- so they are
+ * expanded into triangle/line lists on the CPU here.
+ *
+ * Winding is preserved: the expansions emit the same vertex order the
+ * hardware rasterizes, so face culling behaves the same afterwards.
+ */
+static bool primitive_needs_expansion(unsigned int mode)
+{
+    switch (mode) {
+    case PRIM_TYPE_TRIANGLE_FAN:
+    case PRIM_TYPE_POLYGON:
+    case PRIM_TYPE_QUADS:
+    case PRIM_TYPE_QUAD_STRIP:
+    case PRIM_TYPE_LINE_LOOP:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Upper bound on expanded index count, for buffer sizing. */
+static size_t expanded_index_count(unsigned int mode, size_t n)
+{
+    switch (mode) {
+    case PRIM_TYPE_TRIANGLE_FAN:
+    case PRIM_TYPE_POLYGON:
+        return n >= 3 ? (n - 2) * 3 : 0;
+    case PRIM_TYPE_QUADS:
+        return (n / 4) * 6;
+    case PRIM_TYPE_QUAD_STRIP:
+        return n >= 4 ? ((n - 2) / 2) * 6 : 0;
+    case PRIM_TYPE_LINE_LOOP:
+        return n >= 2 ? n * 2 : 0;
+    default:
+        return n;
+    }
+}
+
+/*
+ * Expand `src` (or an implicit 0..n-1 sequence when src is NULL) into `dst`.
+ * Returns the number of indices written.
+ */
+static size_t expand_primitive(unsigned int mode, const uint32_t *src,
+                               size_t n, uint32_t *dst)
+{
+#define IDX(i) (src ? src[(i)] : (uint32_t)(i))
+    size_t o = 0;
+
+    switch (mode) {
+    case PRIM_TYPE_TRIANGLE_FAN:
+    case PRIM_TYPE_POLYGON:
+        /* (0,1,2) (0,2,3) (0,3,4) ... */
+        for (size_t i = 2; i < n; i++) {
+            dst[o++] = IDX(0);
+            dst[o++] = IDX(i - 1);
+            dst[o++] = IDX(i);
+        }
+        break;
+
+    case PRIM_TYPE_QUADS:
+        /* Independent quads: (0,1,2) (0,2,3) per group of four. */
+        for (size_t i = 0; i + 3 < n; i += 4) {
+            dst[o++] = IDX(i);
+            dst[o++] = IDX(i + 1);
+            dst[o++] = IDX(i + 2);
+            dst[o++] = IDX(i);
+            dst[o++] = IDX(i + 2);
+            dst[o++] = IDX(i + 3);
+        }
+        break;
+
+    case PRIM_TYPE_QUAD_STRIP:
+        /* Each pair of new vertices closes a quad with the previous pair. */
+        for (size_t i = 0; i + 3 < n; i += 2) {
+            dst[o++] = IDX(i);
+            dst[o++] = IDX(i + 1);
+            dst[o++] = IDX(i + 3);
+            dst[o++] = IDX(i);
+            dst[o++] = IDX(i + 3);
+            dst[o++] = IDX(i + 2);
+        }
+        break;
+
+    case PRIM_TYPE_LINE_LOOP:
+        /* Line list, with the closing segment back to the first vertex. */
+        for (size_t i = 0; i < n; i++) {
+            dst[o++] = IDX(i);
+            dst[o++] = IDX((i + 1) % n);
+        }
+        break;
+
+    default:
+        for (size_t i = 0; i < n; i++) {
+            dst[o++] = IDX(i);
+        }
+        break;
+    }
+
+    return o;
+#undef IDX
+}
+
+/* What the expanded stream draws as. */
+static MTLPrimitiveType expanded_primitive_type(unsigned int mode)
+{
+    return (mode == PRIM_TYPE_LINE_LOOP) ? MTLPrimitiveTypeLine
+                                         : MTLPrimitiveTypeTriangle;
+}
 
 static MTLPrimitiveType metal_primitive_type(unsigned int mode, bool *supported)
 {
@@ -429,14 +637,9 @@ static MTLPrimitiveType metal_primitive_type(unsigned int mode, bool *supported)
     case PRIM_TYPE_LINE_STRIP:     return MTLPrimitiveTypeLineStrip;
     case PRIM_TYPE_TRIANGLES:      return MTLPrimitiveTypeTriangle;
     case PRIM_TYPE_TRIANGLE_STRIP: return MTLPrimitiveTypeTriangleStrip;
-    case PRIM_TYPE_TRIANGLE_FAN:
-    case PRIM_TYPE_QUADS:
-    case PRIM_TYPE_QUAD_STRIP:
-    case PRIM_TYPE_POLYGON:
-    case PRIM_TYPE_LINE_LOOP:
     default:
-        /* Metal has no fan/quad/loop primitives. These need index expansion
-         * on the CPU, the same problem the missing geometry stage creates. */
+        /* Anything else is expanded to a triangle/line list beforehand, so
+         * reaching here means an unknown mode. */
         *supported = false;
         return MTLPrimitiveTypeTriangle;
     }
@@ -516,7 +719,9 @@ static id<MTLRenderCommandEncoder> begin_encoder(NV2AState *d)
     /* Metal validates that the scissor lies inside the attachment. */
     sw = MIN(sw, vp_w > xmin ? vp_w - xmin : 0);
     sh = MIN(sh, vp_h > ymin ? vp_h - ymin : 0);
-    if (sw && sh) {
+    if (getenv("XEMU_METAL_FULL_SCISSOR")) {
+        [enc setScissorRect:(MTLScissorRect){ 0, 0, vp_w, vp_h }];
+    } else if (sw && sh) {
         [enc setScissorRect:(MTLScissorRect){ xmin, ymin, sw, sh }];
     }
 
@@ -536,7 +741,7 @@ static id<MTLRenderCommandEncoder> begin_encoder(NV2AState *d)
         case NV_PGRAPH_SETUPRASTER_CULLCTRL_BACK:  m = MTLCullModeBack; break;
         default: break;
         }
-        [enc setCullMode:m];
+        [enc setCullMode:getenv("XEMU_METAL_NO_CULL") ? MTLCullModeNone : m];
     } else {
         [enc setCullMode:MTLCullModeNone];
     }
@@ -580,7 +785,14 @@ void pgraph_metal_draw_begin(NV2AState *d)
      * so it has to happen before the pipeline lookup. */
     MTLVertexDescriptor *vd = pgraph_metal_build_vertex_descriptor(d);
 
-    id<MTLRenderPipelineState> pso = get_pipeline(d, sb, vd);
+    id<MTLRenderPipelineState> pso;
+    bool debug_shader = getenv("XEMU_METAL_DEBUG_SHADER") != NULL;
+
+    if (debug_shader) {
+        pso = get_debug_pipeline(r);
+    } else {
+        pso = get_pipeline(d, sb, vd);
+    }
     if (pso == nil) {
         return;
     }
@@ -589,8 +801,10 @@ void pgraph_metal_draw_begin(NV2AState *d)
     [r->encoder setRenderPipelineState:pso];
     [r->encoder setDepthStencilState:get_depth_stencil_state(d)];
 
-    bind_uniforms(pg, r->encoder, &sb->state);
-    pgraph_metal_bind_vertex_buffers(d, r->encoder);
+    if (!debug_shader) {
+        bind_uniforms(pg, r->encoder, &sb->state);
+        pgraph_metal_bind_vertex_buffers(d, r->encoder);
+    }
 }
 
 void pgraph_metal_draw_end(NV2AState *d)
@@ -639,12 +853,12 @@ void pgraph_metal_draw_end(NV2AState *d)
         static unsigned long n;
         if ((n++ % 20000) == 0) {
             fprintf(stderr,
-                    "draw-stats: ends=%lu issued=%lu unsup_prim=%lu "
-                    "unsup_draw=%lu pipelines=%u/%u enc=%s prim=%d\n",
-                    n, r->draws_issued, r->unsupported_prims,
+                    "draw-stats: ends=%lu issued=%lu expanded=%lu unsup_prim=%lu "
+                    "unsup_draw=%lu pipelines=%u/%u prim=%d\n",
+                    n, r->draws_issued, r->expanded_prims,
+                    r->unsupported_prims,
                     r->unsupported_draws, r->pipeline_count,
-                    r->pipeline_failures,
-                    r->encoder ? "yes" : "no", pg->primitive_mode);
+                    r->pipeline_failures, pg->primitive_mode);
         }
     }
 }
@@ -658,38 +872,114 @@ void pgraph_metal_flush_draw(NV2AState *d)
         return;
     }
 
-    bool supported = false;
-    MTLPrimitiveType prim = metal_primitive_type(pg->primitive_mode,
-                                                 &supported);
-    if (!supported) {
-        r->unsupported_prims++;
+    if (getenv("XEMU_METAL_DEBUG_SHADER")) {
+        [r->encoder drawPrimitives:MTLPrimitiveTypeTriangle
+                       vertexStart:0
+                       vertexCount:3];
+        r->draws_issued++;
         return;
     }
 
+    unsigned int mode = pg->primitive_mode;
+    bool expand = primitive_needs_expansion(mode);
+
+    const uint32_t *src = NULL;
+    size_t src_count = 0;
+
     if (pg->inline_elements_length) {
-        /* 99.7% of draws, per the survey. */
-        size_t bytes = pg->inline_elements_length * sizeof(uint32_t);
+        src = pg->inline_elements;
+        src_count = pg->inline_elements_length;
+    } else if (pg->draw_arrays_length) {
+        if (!expand) {
+            bool supported = false;
+            MTLPrimitiveType prim = metal_primitive_type(mode, &supported);
+            if (!supported) {
+                r->unsupported_prims++;
+                return;
+            }
+            for (int i = 0; i < pg->draw_arrays_length; i++) {
+                [r->encoder drawPrimitives:prim
+                               vertexStart:pg->draw_arrays_start[i]
+                               vertexCount:pg->draw_arrays_count[i]];
+            }
+            r->draws_issued++;
+            return;
+        }
+        /* Expanded draw_arrays: handled per range below via implicit
+         * indices offset by the range start. */
+    } else {
+        /* inline_array and inline_buffer are together 0.1% of draws and are
+         * not staged yet. */
+        r->unsupported_draws++;
+        return;
+    }
+
+    if (src) {
+        size_t out_max = expanded_index_count(mode, src_count);
+        if (out_max == 0) {
+            return;
+        }
+
+        MTLPrimitiveType prim;
+        size_t count;
+        g_autofree uint32_t *expanded = NULL;
+
+        if (expand) {
+            expanded = g_malloc(out_max * sizeof(uint32_t));
+            count = expand_primitive(mode, src, src_count, expanded);
+            prim = expanded_primitive_type(mode);
+            src = expanded;
+            r->expanded_prims++;
+        } else {
+            bool supported = false;
+            prim = metal_primitive_type(mode, &supported);
+            if (!supported) {
+                r->unsupported_prims++;
+                return;
+            }
+            count = src_count;
+        }
+
         id<MTLBuffer> ib =
-            [r->device newBufferWithBytes:pg->inline_elements
-                                   length:bytes
+            [r->device newBufferWithBytes:src
+                                   length:count * sizeof(uint32_t)
                                   options:MTLResourceStorageModeShared];
         [r->encoder drawIndexedPrimitives:prim
-                               indexCount:pg->inline_elements_length
+                               indexCount:count
                                 indexType:MTLIndexTypeUInt32
                               indexBuffer:ib
                         indexBufferOffset:0];
         r->draws_issued++;
-    } else if (pg->draw_arrays_length) {
-        for (int i = 0; i < pg->draw_arrays_length; i++) {
-            [r->encoder drawPrimitives:prim
-                           vertexStart:pg->draw_arrays_start[i]
-                           vertexCount:pg->draw_arrays_count[i]];
+        return;
+    }
+
+    /* Expanded draw_arrays ranges. */
+    for (int i = 0; i < pg->draw_arrays_length; i++) {
+        size_t start = pg->draw_arrays_start[i];
+        size_t n = pg->draw_arrays_count[i];
+        size_t out_max = expanded_index_count(mode, n);
+        if (out_max == 0) {
+            continue;
         }
+
+        g_autofree uint32_t *expanded =
+            g_malloc(out_max * sizeof(uint32_t));
+        size_t count = expand_primitive(mode, NULL, n, expanded);
+        for (size_t k = 0; k < count; k++) {
+            expanded[k] += start;
+        }
+
+        id<MTLBuffer> ib =
+            [r->device newBufferWithBytes:expanded
+                                   length:count * sizeof(uint32_t)
+                                  options:MTLResourceStorageModeShared];
+        [r->encoder drawIndexedPrimitives:expanded_primitive_type(mode)
+                               indexCount:count
+                                indexType:MTLIndexTypeUInt32
+                              indexBuffer:ib
+                        indexBufferOffset:0];
         r->draws_issued++;
-    } else {
-        /* inline_array and inline_buffer are together 0.1% of draws; they
-         * need their vertex data staged differently and are not wired up. */
-        r->unsupported_draws++;
+        r->expanded_prims++;
     }
 }
 
