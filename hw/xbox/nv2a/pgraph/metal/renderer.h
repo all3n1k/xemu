@@ -100,6 +100,24 @@ typedef struct PGRAPHMetalState {
 
     /* Pipeline states, keyed on shader + attachment + blend state. */
     GHashTable               *pipeline_cache;
+    unsigned int             pipeline_count;
+    unsigned int             pipeline_failures;
+
+    /*
+     * Depth target used when the guest binds none. The generated fragment
+     * shader always writes gl_FragDepth -- the NV2A w-buffering emulation
+     * needs it -- and Metal rejects a pipeline that writes depth with no
+     * depth attachment, where GL simply discards the write. So an
+     * unbound-zeta draw gets a throwaway target of the right size.
+     */
+    id<MTLTexture>           scratch_depth;
+
+    /* Current draw. */
+    id<MTLCommandBuffer>          command_buffer;
+    id<MTLRenderCommandEncoder>   encoder;
+    unsigned long            draws_issued;
+    unsigned long            unsupported_prims;
+    unsigned long            unsupported_draws;
 } PGRAPHMetalState;
 
 #endif /* XEMU_NV2A_PGRAPH_METAL_RENDERER_H */

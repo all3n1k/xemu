@@ -270,15 +270,41 @@ static unsigned int pgraph_metal_get_surface_scale_factor(NV2AState *d)
 
 static int pgraph_metal_get_framebuffer_surface(NV2AState *d)
 {
+    PGRAPHState *pg = &d->pgraph;
+    PGRAPHMetalState *r = pg->metal_renderer_state;
+
     /*
-     * Stage A stub: returns 0 to indicate "no accelerated framebuffer
-     * available". This forces the UI layer to fall back to its existing
-     * VGA-path that uploads from the d->vga buffer, so we still get a
-     * visible (slow) display while verifying the rest of the wiring.
+     * The xemu UI composites with OpenGL (ui/xemu.c takes a GLuint here), so
+     * a Metal texture cannot be handed over directly. Returning 0 makes the
+     * UI fall back to uploading the guest framebuffer -- but that only shows
+     * anything if the rendered target has been copied back into guest RAM
+     * first, which nothing else triggers.
      *
-     * In Stage C this will be replaced with a CAMetalLayer-backed display
-     * path that presents an actual MTLTexture.
+     * So locate the surface the CRTC is scanning out and force it down,
+     * synchronously, before returning. Costs a full readback per frame; a
+     * Metal-native display path (IOSurface shared with GL) would remove it.
      */
+    qemu_mutex_lock(&d->pfifo.lock);
+
+    VGADisplayParams vga_display_params;
+    d->vga.get_params(&d->vga, &vga_display_params);
+
+    MetalSurfaceBinding *surface = pgraph_metal_surface_get_within(
+        d, d->pcrtc.start + vga_display_params.line_offset);
+    if (surface == NULL || !surface->color) {
+        qemu_mutex_unlock(&d->pfifo.lock);
+        return 0;
+    }
+
+    surface->frame_time = pg->frame_time;
+    surface->download_pending = true;
+
+    qemu_event_reset(&r->downloads_complete);
+    qatomic_set(&r->downloads_pending, true);
+    pfifo_kick(d);
+    qemu_mutex_unlock(&d->pfifo.lock);
+    qemu_event_wait(&r->downloads_complete);
+
     return 0;
 }
 

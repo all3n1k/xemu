@@ -536,6 +536,31 @@ static void surface_download(NV2AState *d, MetalSurfaceBinding *surface,
                                    surface->pitch * surface->height,
                                    DIRTY_MEMORY_NV2A_TEX);
 
+    if (getenv("XEMU_METAL_FB_STATS")) {
+        static int n;
+        if ((n++ % 30) == 0) {
+            const uint32_t *px = (const uint32_t *)(d->vram_ptr +
+                                                    surface->vram_addr);
+            size_t count = (size_t)surface->width * surface->height;
+            size_t nonblack = 0, distinct_hint = 0;
+            uint32_t first = count ? px[0] : 0;
+            for (size_t i = 0; i < count; i++) {
+                if ((px[i] & 0x00FFFFFF) != 0) {
+                    nonblack++;
+                }
+                if (px[i] != first) {
+                    distinct_hint = 1;
+                }
+            }
+            fprintf(stderr,
+                    "fb-stats #%d: %ux%u  nonblack=%zu/%zu (%.1f%%)  "
+                    "varied=%s\n",
+                    n, surface->width, surface->height, nonblack, count,
+                    count ? 100.0 * nonblack / count : 0.0,
+                    distinct_hint ? "yes" : "no");
+        }
+    }
+
     surface->download_pending = false;
     surface->draw_dirty = false;
 }

@@ -21,27 +21,46 @@
 #include "msl.h"
 
 /*
- * MSL spellings for the uniform element types. Two tables are needed:
+ * MSL spellings for the uniform element types, indexed by enum
+ * UniformElementType, so this must stay in the same order as
+ * UNIFORM_ELEMENT_TYPE_X in common.h.
  *
- *  - `struct` types use packed vectors, giving the same tight layout as the
- *    C `vecN` typedefs in common.h (float[N]). That lets the renderer upload
- *    a *UniformValues struct without a separate std140-style repack.
- *  - `value` types are the natural aligned vectors, used when copying a
- *    scalar member into a local.
+ * These are the *natural* vector types, not packed ones. An earlier version
+ * used packed vectors hoping the MSL struct would come out byte-identical to
+ * the C *UniformValues struct so the renderer could upload it with a single
+ * memcpy. It cannot: the C typedefs are `float[N]`, which is 4-byte aligned,
+ * so members land at offsets MSL is not allowed to place a vector at --
+ * VshUniformValues::inlineValue sits at 3096 and needs 16-byte alignment,
+ * PshUniformValues::bumpMat sits at 4 and needs 8. vec3 arrays differ too
+ * (stride 12 in C, 16 in MSL).
  *
- * Both are indexed by enum UniformElementType, so they must stay in the same
- * order as UNIFORM_ELEMENT_TYPE_X in common.h.
+ * So the layout is MSL's own, and the renderer repacks member by member using
+ * pgraph_msl_uniform_layout(). Natural types are kept because the generated
+ * arithmetic depends on them (float2x2 has to multiply like a matrix).
  */
 static const char *msl_uniform_struct_type[] = {
-    "float",   /* float */
-    "int",     /* int   */
-    "int2",    /* ivec2 */
-    "int4",    /* ivec4 */
-    "float2x2", /* mat2 */
-    "uint",    /* uint  */
-    "packed_float2", /* vec2 */
-    "packed_float3", /* vec3 */
-    "float4",  /* vec4  */
+    "float",    /* float */
+    "int",      /* int   */
+    "int2",     /* ivec2 */
+    "int4",     /* ivec4 */
+    "float2x2", /* mat2  */
+    "uint",     /* uint  */
+    "float2",   /* vec2  */
+    "float3",   /* vec3  */
+    "float4",   /* vec4  */
+};
+
+/* Size and alignment of each MSL type above, for layout computation. */
+static const struct { size_t size, align; } msl_uniform_type_layout[] = {
+    { 4,  4  }, /* float    */
+    { 4,  4  }, /* int      */
+    { 8,  8  }, /* int2     */
+    { 16, 16 }, /* int4     */
+    { 16, 8  }, /* float2x2 */
+    { 4,  4  }, /* uint     */
+    { 8,  8  }, /* float2   */
+    { 16, 16 }, /* float3   */
+    { 16, 16 }, /* float4   */
 };
 
 static const char *msl_uniform_value_type[] = {
@@ -412,6 +431,37 @@ const char *pgraph_msl_vsh_output_regs(void)
         "  vec4 oT3 = vec4(0.0,0.0,0.0,1.0);\n"
         "\n";
     // clang-format on
+}
+
+size_t pgraph_msl_uniform_layout(const UniformInfo *info, size_t num_info,
+                                int skip_index, MslUniformMember *members)
+{
+    size_t offset = 0;
+    size_t max_align = 1;
+
+    for (size_t i = 0; i < num_info; i++) {
+        if ((int)i == skip_index) {
+            members[i].offset = 0;
+            members[i].stride = 0;
+            members[i].count = 0;
+            continue;
+        }
+
+        size_t align = msl_uniform_type_layout[info[i].type].align;
+        size_t stride = msl_uniform_type_layout[info[i].type].size;
+
+        offset = ROUND_UP(offset, align);
+        members[i].offset = offset;
+        members[i].stride = stride;
+        members[i].count = info[i].count;
+        members[i].src_offset = info[i].val_offs;
+        members[i].src_stride = info[i].size;
+
+        offset += stride * info[i].count;
+        max_align = MAX(max_align, align);
+    }
+
+    return ROUND_UP(offset, max_align);
 }
 
 void pgraph_msl_gen_uniform_struct(MString *out, const char *name,

@@ -62,9 +62,27 @@ const char *pgraph_msl_vsh_prog_locals(void);
  * under MSL. */
 const char *pgraph_msl_vsh_output_regs(void);
 
-/* Emit `struct <name> { ... };` describing a uniform block. Member types use
- * MSL packed vectors so the layout matches the tightly packed C
- * <name>Values struct the renderer uploads. */
+/*
+ * Where each uniform member lands in the generated MSL struct, and where it
+ * comes from in the C *UniformValues struct. The two layouts are not the
+ * same and cannot be made the same (see msl.c), so the renderer copies
+ * member by member -- and element by element where the strides differ, which
+ * they do for vec3.
+ */
+typedef struct MslUniformMember {
+    size_t offset;     /* byte offset within the MSL struct */
+    size_t stride;     /* element stride in the MSL struct */
+    size_t count;      /* element count */
+    size_t src_offset; /* byte offset within the C *UniformValues struct */
+    size_t src_stride; /* element stride in the C struct */
+} MslUniformMember;
+
+/* Compute the MSL layout for a uniform block; returns the struct size. */
+size_t pgraph_msl_uniform_layout(const UniformInfo *info, size_t num_info,
+                                 int skip_index, MslUniformMember *members);
+
+/* Emit `struct <name> { ... };` describing a uniform block. Members use MSL's
+ * natural alignment; pgraph_msl_uniform_layout() says where each one lands. */
 void pgraph_msl_gen_uniform_struct(MString *out, const char *name,
                                    const UniformInfo *info, size_t num_info,
                                    int skip_index);
