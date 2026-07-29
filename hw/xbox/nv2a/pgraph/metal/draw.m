@@ -1124,6 +1124,46 @@ void pgraph_metal_flush_draw(NV2AState *d)
         return;
     }
 
+    MetalShaderBinding *sb = r->shader_binding;
+    if (sb == NULL || !sb->valid) {
+        return;
+    }
+
+    bool debug_shader = getenv("XEMU_METAL_DEBUG_SHADER") != NULL;
+    bool debug_fs = getenv("XEMU_METAL_DEBUG_FS") != NULL;
+
+    /*
+     * Build the vertex descriptor for the path actually taken, bind the
+     * matching buffers, and only then create the pipeline -- see the note in
+     * draw_begin for why the order matters.
+     */
+    MTLVertexDescriptor *vd;
+    unsigned int inline_count = 0;
+
+    if (pg->inline_buffer_length) {
+        vd = [MTLVertexDescriptor vertexDescriptor];
+        inline_count = pgraph_metal_bind_inline_buffer(d, r->encoder, vd);
+    } else if (pg->inline_array_length) {
+        vd = [MTLVertexDescriptor vertexDescriptor];
+        inline_count = pgraph_metal_bind_inline_array(d, r->encoder, vd);
+    } else {
+        vd = pgraph_metal_build_vertex_descriptor(d);
+        pgraph_metal_bind_vertex_buffers(d, r->encoder);
+    }
+
+    id<MTLRenderPipelineState> pso;
+    if (debug_shader) {
+        pso = get_debug_pipeline(r);
+    } else if (debug_fs && r->color_binding) {
+        pso = get_hybrid_pipeline(r, sb, vd);
+    } else {
+        pso = get_pipeline(d, sb, vd);
+    }
+    if (pso == nil) {
+        return;
+    }
+    [r->encoder setRenderPipelineState:pso];
+
     unsigned int mode = pg->primitive_mode;
     bool expand = primitive_needs_expansion(mode);
 
@@ -1160,13 +1200,7 @@ void pgraph_metal_flush_draw(NV2AState *d)
          */
         bool supported = false;
         MTLPrimitiveType prim = metal_primitive_type(mode, &supported);
-        unsigned int n;
-
-        if (pg->inline_buffer_length) {
-            n = pgraph_metal_bind_inline_buffer(d, r->encoder, r->pending_vd);
-        } else {
-            n = pgraph_metal_bind_inline_array(d, r->encoder, r->pending_vd);
-        }
+        unsigned int n = inline_count;
 
         if (!n) {
             return;

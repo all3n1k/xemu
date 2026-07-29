@@ -316,6 +316,28 @@ unsigned int pgraph_metal_bind_inline_array(NV2AState *d,
 
     unsigned int index_count =
         pg->inline_array_length * sizeof(uint32_t) / vertex_size;
+
+    if (getenv("XEMU_METAL_TRACE_INLINE")) {
+        static int n;
+        if (n++ < 4) {
+            fprintf(stderr,
+                    "inline_array: len=%u words (%u bytes) vertex_size=%u "
+                    "-> %u vertices\n",
+                    pg->inline_array_length,
+                    (unsigned)(pg->inline_array_length * sizeof(uint32_t)),
+                    vertex_size, index_count);
+            for (int k = 0; k < NV2A_VERTEXSHADER_ATTRIBUTES; k++) {
+                VertexAttribute *a = &pg->vertex_attributes[k];
+                if (a->count) {
+                    fprintf(stderr,
+                            "   attr%d fmt=0x%x size=%u count=%u off=%u\n",
+                            k, a->format, a->size, a->count,
+                            a->inline_array_offset);
+                }
+            }
+        }
+    }
+
     if (!index_count) {
         return 0;
     }
