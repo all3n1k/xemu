@@ -32,5 +32,11 @@ void pgraph_metal_finalize_vertex(PGRAPHState *pg);
 MTLVertexDescriptor *pgraph_metal_build_vertex_descriptor(NV2AState *d);
 void pgraph_metal_bind_vertex_buffers(NV2AState *d,
                                       id<MTLRenderCommandEncoder> enc);
+unsigned int pgraph_metal_bind_inline_buffer(NV2AState *d,
+                                             id<MTLRenderCommandEncoder> enc,
+                                             MTLVertexDescriptor *vd);
+unsigned int pgraph_metal_bind_inline_array(NV2AState *d,
+                                            id<MTLRenderCommandEncoder> enc,
+                                            MTLVertexDescriptor *vd);
 
 #endif /* XEMU_NV2A_PGRAPH_METAL_VERTEX_H */

@@ -133,6 +133,8 @@ typedef struct PGRAPHMetalState {
     unsigned long            expanded_prims;
     unsigned long            unsupported_prims;
     unsigned long            unsupported_draws;
+    unsigned long            inline_draws;
+    MTLVertexDescriptor      *pending_vd;
 } PGRAPHMetalState;
 
 #endif /* XEMU_NV2A_PGRAPH_METAL_RENDERER_H */

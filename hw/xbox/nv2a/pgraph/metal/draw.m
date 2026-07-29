@@ -960,6 +960,7 @@ void pgraph_metal_draw_begin(NV2AState *d)
      * offsets and the compressed/swizzle masks the shader state depends on,
      * so it has to happen before the pipeline lookup. */
     MTLVertexDescriptor *vd = pgraph_metal_build_vertex_descriptor(d);
+    r->pending_vd = vd;
 
     id<MTLRenderPipelineState> pso;
     bool debug_shader = getenv("XEMU_METAL_DEBUG_SHADER") != NULL;
@@ -1107,9 +1108,55 @@ void pgraph_metal_flush_draw(NV2AState *d)
         }
         /* Expanded draw_arrays: handled per range below via implicit
          * indices offset by the range start. */
+    } else if (pg->inline_buffer_length || pg->inline_array_length) {
+        /*
+         * Immediate-mode vertices. Rare by count but not by importance: the
+         * dashboard's final composite -- the draws that put the frame into
+         * the scanout surface -- comes through here, which is why skipping
+         * this path left a black screen while everything else rendered.
+         */
+        bool supported = false;
+        MTLPrimitiveType prim = metal_primitive_type(mode, &supported);
+        unsigned int n;
+
+        if (pg->inline_buffer_length) {
+            n = pgraph_metal_bind_inline_buffer(d, r->encoder, r->pending_vd);
+        } else {
+            n = pgraph_metal_bind_inline_array(d, r->encoder, r->pending_vd);
+        }
+
+        if (!n) {
+            return;
+        }
+
+        if (expand) {
+            size_t out_max = expanded_index_count(mode, n);
+            if (!out_max) {
+                return;
+            }
+            g_autofree uint32_t *idx = g_malloc(out_max * sizeof(uint32_t));
+            size_t cnt = expand_primitive(mode, NULL, n, idx);
+            id<MTLBuffer> ib =
+                [r->device newBufferWithBytes:idx
+                                       length:cnt * sizeof(uint32_t)
+                                      options:MTLResourceStorageModeShared];
+            [r->encoder drawIndexedPrimitives:expanded_primitive_type(mode)
+                                   indexCount:cnt
+                                    indexType:MTLIndexTypeUInt32
+                                  indexBuffer:ib
+                            indexBufferOffset:0];
+            r->expanded_prims++;
+        } else if (supported) {
+            [r->encoder drawPrimitives:prim vertexStart:0 vertexCount:n];
+        } else {
+            r->unsupported_prims++;
+            return;
+        }
+
+        r->draws_issued++;
+        r->inline_draws++;
+        return;
     } else {
-        /* inline_array and inline_buffer are together 0.1% of draws and are
-         * not staged yet. */
         r->unsupported_draws++;
         return;
     }

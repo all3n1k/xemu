@@ -229,6 +229,148 @@ MTLVertexDescriptor *pgraph_metal_build_vertex_descriptor(NV2AState *d)
     return vd;
 }
 
+/*
+ * Inline buffer: the guest supplies vertices immediately, one float4 per
+ * attribute per vertex, rather than pointing at an array in memory. This is
+ * what a fullscreen composite quad uses, which is why the dashboard's final
+ * blit-to-screen draws went missing while everything else rendered.
+ */
+unsigned int pgraph_metal_bind_inline_buffer(NV2AState *d,
+                                             id<MTLRenderCommandEncoder> enc,
+                                             MTLVertexDescriptor *vd)
+{
+    PGRAPHState *pg = &d->pgraph;
+    PGRAPHMetalState *r = pg->metal_renderer_state;
+
+    unsigned int count = pg->inline_buffer_length;
+    if (!count) {
+        return 0;
+    }
+
+    for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
+        VertexAttribute *attr = &pg->vertex_attributes[i];
+        NSUInteger slot = METAL_VERTEX_BUFFER_BASE + i;
+
+        vd.attributes[i].format = MTLVertexFormatFloat4;
+        vd.attributes[i].offset = 0;
+        vd.attributes[i].bufferIndex = slot;
+
+        if (attr->inline_buffer_populated) {
+            size_t bytes = (size_t)count * sizeof(float) * 4;
+            id<MTLBuffer> b =
+                [r->device newBufferWithBytes:attr->inline_buffer
+                                       length:bytes
+                                      options:MTLResourceStorageModeShared];
+            vd.layouts[slot].stride = 16;
+            vd.layouts[slot].stepFunction = MTLVertexStepFunctionPerVertex;
+            vd.layouts[slot].stepRate = 1;
+            [enc setVertexBuffer:b offset:0 atIndex:slot];
+
+            attr->inline_buffer_populated = false;
+            memcpy(attr->inline_value,
+                   attr->inline_buffer + (count - 1) * 4,
+                   sizeof(attr->inline_value));
+        } else {
+            /* Constant for every vertex. */
+            float *cd = (float *)r->const_attr_buffer.contents;
+            memcpy(&cd[i * 4], attr->inline_value, sizeof(float) * 4);
+            vd.layouts[slot].stride = 16;
+            vd.layouts[slot].stepFunction = MTLVertexStepFunctionConstant;
+            vd.layouts[slot].stepRate = 0;
+            [enc setVertexBuffer:r->const_attr_buffer
+                          offset:i * 16
+                         atIndex:slot];
+        }
+    }
+
+    return count;
+}
+
+/*
+ * Inline array: attributes interleaved in one guest-supplied block, packed in
+ * attribute order with each element aligned to its own size.
+ */
+unsigned int pgraph_metal_bind_inline_array(NV2AState *d,
+                                            id<MTLRenderCommandEncoder> enc,
+                                            MTLVertexDescriptor *vd)
+{
+    PGRAPHState *pg = &d->pgraph;
+    PGRAPHMetalState *r = pg->metal_renderer_state;
+
+    unsigned int offset = 0;
+    for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
+        VertexAttribute *attr = &pg->vertex_attributes[i];
+        if (attr->count == 0) {
+            continue;
+        }
+        offset = ROUND_UP(offset, attr->size);
+        attr->inline_array_offset = offset;
+        offset += attr->size * attr->count;
+        offset = ROUND_UP(offset, attr->size);
+    }
+
+    unsigned int vertex_size = offset;
+    if (!vertex_size) {
+        return 0;
+    }
+
+    unsigned int index_count =
+        pg->inline_array_length * sizeof(uint32_t) / vertex_size;
+    if (!index_count) {
+        return 0;
+    }
+
+    id<MTLBuffer> b = [r->device
+        newBufferWithBytes:pg->inline_array
+                    length:pg->inline_array_length * sizeof(uint32_t)
+                   options:MTLResourceStorageModeShared];
+
+    for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
+        VertexAttribute *attr = &pg->vertex_attributes[i];
+        NSUInteger slot = METAL_VERTEX_BUFFER_BASE + i;
+
+        if (attr->count == 0) {
+            float *cd = (float *)r->const_attr_buffer.contents;
+            memcpy(&cd[i * 4], attr->inline_value, sizeof(float) * 4);
+            vd.attributes[i].format = MTLVertexFormatFloat4;
+            vd.attributes[i].offset = 0;
+            vd.attributes[i].bufferIndex = slot;
+            vd.layouts[slot].stride = 16;
+            vd.layouts[slot].stepFunction = MTLVertexStepFunctionConstant;
+            vd.layouts[slot].stepRate = 0;
+            [enc setVertexBuffer:r->const_attr_buffer
+                          offset:i * 16
+                         atIndex:slot];
+            continue;
+        }
+
+        bool sw = false, cmp = false;
+        MTLVertexFormat fmt = metal_vertex_format(attr->format, attr->count,
+                                                  &sw, &cmp);
+        if (fmt == MTLVertexFormatInvalid) {
+            fmt = MTLVertexFormatFloat4;
+        }
+        if (sw) {
+            pg->swizzle_attrs |= (1 << i);
+        }
+        if (cmp) {
+            pg->compressed_attrs |= (1 << i);
+        }
+
+        vd.attributes[i].format = fmt;
+        vd.attributes[i].offset = 0;
+        vd.attributes[i].bufferIndex = slot;
+        vd.layouts[slot].stride = vertex_size;
+        vd.layouts[slot].stepFunction = MTLVertexStepFunctionPerVertex;
+        vd.layouts[slot].stepRate = 1;
+        [enc setVertexBuffer:b
+                      offset:attr->inline_array_offset
+                     atIndex:slot];
+    }
+
+    return index_count;
+}
+
 void pgraph_metal_bind_vertex_buffers(NV2AState *d,
                                       id<MTLRenderCommandEncoder> enc)
 {
