@@ -1024,6 +1024,32 @@ void pgraph_metal_draw_end(NV2AState *d)
          * so without this a rejected draw is indistinguishable from one that
          * rendered nothing.
          */
+        if (getenv("XEMU_METAL_TRACE_SCANOUT") && r->color_binding &&
+            r->color_binding->vram_addr == 0x032a4000 &&
+            r->color_binding->texture.storageMode == MTLStorageModeShared) {
+            unsigned tw = (unsigned)r->color_binding->texture.width;
+            unsigned th = (unsigned)r->color_binding->texture.height;
+            size_t n = (size_t)tw * th;
+            uint32_t *buf = g_malloc(n * 4);
+            [r->color_binding->texture getBytes:buf
+                                    bytesPerRow:tw * 4
+                                     fromRegion:MTLRegionMake2D(0, 0, tw, th)
+                                    mipmapLevel:0];
+            size_t nz = 0;
+            for (size_t k = 0; k < n; k++) {
+                if (buf[k]) { nz++; }
+            }
+            g_free(buf);
+            static unsigned long tn;
+            if ((tn++ % 20) == 0) {
+                fprintf(stderr,
+                        "scanout-draw: prim=%d inline_arr=%d vsize_words=%d "
+                        "-> TEXTURE nonzero=%zu/%zu\n",
+                        pg->primitive_mode, pg->inline_array_length,
+                        pg->inline_array_length, nz, n);
+            }
+        }
+
         if (r->command_buffer.status != MTLCommandBufferStatusCompleted) {
             r->cmdbuf_errors++;
             if (r->cmdbuf_errors < 5) {
