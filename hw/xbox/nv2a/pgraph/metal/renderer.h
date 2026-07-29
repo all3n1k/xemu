@@ -118,6 +118,7 @@ typedef struct PGRAPHMetalState {
     id<MTLTexture>           white_texture;
     unsigned long            texture_uploads;
     unsigned long            texture_unsupported;
+    unsigned long            surface_as_texture;
     bool                     reported_format[64];
 
     /* Uniform staging. setVertexBytes: caps at 4 KB and the vertex block

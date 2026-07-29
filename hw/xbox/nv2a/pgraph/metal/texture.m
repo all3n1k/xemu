@@ -39,6 +39,7 @@
 #include "qemu/fast-hash.h"
 #include "renderer.h"
 #include "texture.h"
+#include "surface.h"
 
 typedef struct MetalTextureFormat {
     MTLPixelFormat pixel_format;
@@ -170,6 +171,31 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
 {
     PGRAPHState *pg = &d->pgraph;
     PGRAPHMetalState *r = pg->metal_renderer_state;
+
+    /*
+     * Surface-as-texture.
+     *
+     * A render target's pixels live only in its MTLTexture; its guest memory
+     * is never written unless something explicitly downloads it. So when a
+     * texture stage points at the memory of a live render surface, reading
+     * that memory yields zeros and the sample comes back black.
+     *
+     * This is exactly how the dashboard composites: it renders the scene into
+     * offscreen surfaces, then issues a small number of draws into the
+     * scanout surface that sample those surfaces as textures. Without this
+     * the final composite samples nothing and the screen stays black, even
+     * though every earlier stage rendered correctly.
+     *
+     * The GL backend solves this with pgraph_gl_render_surface_to_texture.
+     * Binding the surface's texture directly is the Metal equivalent and is
+     * cheaper, at the cost of not handling format or scale mismatches yet.
+     */
+    hwaddr tex_addr = pgraph_get_texture_phys_addr(pg, i);
+    MetalSurfaceBinding *surf = pgraph_metal_surface_get(d, tex_addr);
+    if (surf && surf->color && surf->texture != nil) {
+        r->surface_as_texture++;
+        return surf->texture;
+    }
 
     MetalTextureFormat mf = metal_texture_format(s->color_format);
     if (!mf.supported || s->dimensionality != 2 || s->cubemap) {

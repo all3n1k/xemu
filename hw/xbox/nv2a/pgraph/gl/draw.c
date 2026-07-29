@@ -335,6 +335,31 @@ void pgraph_gl_draw_end(NV2AState *d)
     PGRAPHState *pg = &d->pgraph;
     PGRAPHGLState *r = pg->gl_renderer_state;
 
+    if (getenv("XEMU_GL_TARGET_COUNTS") && r->color_binding) {
+        static hwaddr addrs[16];
+        static unsigned long counts[16];
+        static int naddr;
+        static unsigned long total;
+        int idx = -1;
+        for (int i = 0; i < naddr; i++) {
+            if (addrs[i] == r->color_binding->vram_addr) { idx = i; }
+        }
+        if (idx < 0 && naddr < 16) {
+            idx = naddr++;
+            addrs[idx] = r->color_binding->vram_addr;
+            counts[idx] = 0;
+        }
+        if (idx >= 0) { counts[idx]++; }
+        if ((total++ % 1500) == 0) {
+            fprintf(stderr, "GL-target-counts (total %lu):", total);
+            for (int i = 0; i < naddr; i++) {
+                fprintf(stderr, " @%08lx=%lu", (unsigned long)addrs[i],
+                        counts[i]);
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+
     uint32_t control_0 = pgraph_reg_r(pg, NV_PGRAPH_CONTROL_0);
     bool mask_alpha = control_0 & NV_PGRAPH_CONTROL_0_ALPHA_WRITE_ENABLE;
     bool mask_red = control_0 & NV_PGRAPH_CONTROL_0_RED_WRITE_ENABLE;

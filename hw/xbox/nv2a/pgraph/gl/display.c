@@ -383,6 +383,27 @@ void pgraph_gl_sync(NV2AState *d)
         return;
     }
 
+    if (getenv("XEMU_GL_DISPLAY_STATS")) {
+        static unsigned long n;
+        if ((n++ % 100) == 0) {
+            const uint32_t *px =
+                (const uint32_t *)(d->vram_ptr + surface->vram_addr);
+            size_t cnt = (size_t)surface->width * surface->height;
+            size_t nz = 0;
+            for (size_t i = 0; i < cnt; i++) {
+                if (px[i]) { nz++; }
+            }
+            fprintf(stderr,
+                    "GL-display: crtc=%08lx surf=@%08lx %ux%u pitch=%u "
+                    "ram_nonzero=%zu/%zu upload_pending=%d draw_dirty=%d\n",
+                    (unsigned long)(d->pcrtc.start +
+                                    vga_display_params.line_offset),
+                    (unsigned long)surface->vram_addr, surface->width,
+                    surface->height, surface->pitch, nz, cnt,
+                    surface->upload_pending, surface->draw_dirty);
+        }
+    }
+
     /* FIXME: Sanity check surface dimensions */
 
     /* Wait for queued commands to complete */
