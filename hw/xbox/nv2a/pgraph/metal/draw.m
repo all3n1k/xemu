@@ -805,6 +805,53 @@ static id<MTLRenderCommandEncoder> begin_encoder(NV2AState *d)
         [enc setScissorRect:(MTLScissorRect){ xmin, ymin, sw, sh }];
     }
 
+    if (getenv("XEMU_METAL_SURFACE_DUMP") && r->color_binding) {
+        /* One full dump per distinct surface address, all fields, so the two
+         * targets can be compared directly rather than reasoned about. */
+        static hwaddr seen[16];
+        static int nseen;
+        MetalSurfaceBinding *b = r->color_binding;
+        bool known = false;
+        for (int i = 0; i < nseen; i++) {
+            if (seen[i] == b->vram_addr) {
+                known = true;
+            }
+        }
+        if (!known && nseen < 16) {
+            seen[nseen++] = b->vram_addr;
+            fprintf(stderr,
+                "SURF @%08lx\n"
+                "  binding : %ux%u pitch=%u size=%zu swizzle=%d color=%d\n"
+                "  fmt     : host_bpp=%u guest_bpp=%u mtlfmt=%lu depth=%d stencil=%d\n"
+                "  texture : %lux%lu mtlfmt=%lu storage=%lu usage=%lu\n"
+                "  shape   : clip=%u,%u %ux%u log=%ux%u aa=%u cfmt=%u zfmt=%u\n"
+                "  state   : cleared=%d draw_dirty=%d up_pend=%d dn_pend=%d\n"
+                "  binddim : %ux%u clip=%u,%u %ux%u\n"
+                "  viewport: %ux%u scissor=%u,%u %ux%u  scale=%u\n",
+                (unsigned long)b->vram_addr,
+                b->width, b->height, b->pitch, b->size, b->swizzle, b->color,
+                b->fmt.host_bytes_per_pixel, b->fmt.guest_bytes_per_pixel,
+                (unsigned long)b->fmt.pixel_format, b->fmt.depth,
+                b->fmt.stencil,
+                (unsigned long)b->texture.width,
+                (unsigned long)b->texture.height,
+                (unsigned long)b->texture.pixelFormat,
+                (unsigned long)b->texture.storageMode,
+                (unsigned long)b->texture.usage,
+                b->shape.clip_x, b->shape.clip_y, b->shape.clip_width,
+                b->shape.clip_height, 1u << b->shape.log_width,
+                1u << b->shape.log_height, b->shape.anti_aliasing,
+                b->shape.color_format, b->shape.zeta_format,
+                b->cleared, b->draw_dirty, b->upload_pending,
+                b->download_pending,
+                pg->surface_binding_dim.width, pg->surface_binding_dim.height,
+                pg->surface_binding_dim.clip_x, pg->surface_binding_dim.clip_y,
+                pg->surface_binding_dim.clip_width,
+                pg->surface_binding_dim.clip_height,
+                vp_w, vp_h, xmin, ymin, sw, sh, pg->surface_scale_factor);
+        }
+    }
+
     if (getenv("XEMU_METAL_VIEWPORT_STATS") && r->color_binding) {
         static unsigned long vn;
         if ((vn++ % 2000) == 0) {
