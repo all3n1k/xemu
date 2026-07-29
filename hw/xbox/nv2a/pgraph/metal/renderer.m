@@ -310,7 +310,7 @@ static int pgraph_metal_get_framebuffer_surface(NV2AState *d)
 
     if (getenv("XEMU_METAL_SCANOUT_STATS")) {
         static unsigned long sn;
-        if ((sn++ % 200) == 0) {
+        if (1) {
             const uint32_t *px = (const uint32_t *)(d->vram_ptr +
                                                     surface->vram_addr);
             size_t count = (size_t)surface->width * surface->height;
@@ -321,8 +321,10 @@ static int pgraph_metal_get_framebuffer_surface(NV2AState *d)
                 }
             }
             fprintf(stderr,
-                    "scanout-ram: @%08lx %ux%u nonblack=%zu/%zu (%.1f%%) "
-                    "draw_dirty=%d\n",
+                    "scanout-ram: crtc=%08lx surf=@%08lx %ux%u "
+                    "nonblack=%zu/%zu (%.1f%%) draw_dirty=%d\n",
+                    (unsigned long)(d->pcrtc.start +
+                                    vga_display_params.line_offset),
                     (unsigned long)surface->vram_addr, surface->width,
                     surface->height, nonblack, count,
                     count ? 100.0 * nonblack / count : 0.0,

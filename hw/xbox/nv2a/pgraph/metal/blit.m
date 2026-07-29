@@ -112,6 +112,22 @@ void pgraph_metal_image_blit(NV2AState *d)
         pg->draw_time++;
     }
 
+    if (getenv("XEMU_METAL_BLIT_STATS")) {
+        static unsigned long bn;
+        if ((bn++ % 100) == 0) {
+            fprintf(stderr,
+                    "blit: src @%08lx -> dst @%08lx  %ux%u op=%d "
+                    "src_pitch=%u dst_pitch=%u src_surf=%s dst_surf=%s\n",
+                    (unsigned long)(source_addr + source_offset),
+                    (unsigned long)(dest_addr + dest_offset),
+                    image_blit->width, image_blit->height,
+                    image_blit->operation,
+                    context_surfaces->source_pitch,
+                    context_surfaces->dest_pitch,
+                    surf_src ? "yes" : "no", surf_dest ? "yes" : "no");
+        }
+    }
+
     if (image_blit->operation != NV09F_SET_OPERATION_SRCCOPY) {
         NV2A_UNIMPLEMENTED("Metal blit operation 0x%x",
                            image_blit->operation);
