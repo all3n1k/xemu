@@ -600,6 +600,88 @@ void pgraph_metal_download_dirty_surfaces(NV2AState *d)
     qemu_event_set(&r->dirty_surfaces_download_complete);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Upload.                                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Guest memory -> render target.
+ *
+ * This is the other half of the lazy surface synchronization the GL and
+ * Vulkan backends do, and it was missing here. Anything that writes a
+ * surface's memory with the CPU -- most importantly the 2D blit that moves a
+ * rendered frame to the scanout buffer -- marks the destination
+ * upload_pending, and without this the GPU texture never sees those pixels.
+ *
+ * Two layout differences have to be undone: the NV2A's swizzled ordering,
+ * and a guest pitch that is wider than the texture row (the surface may be a
+ * window into a larger buffer). Getting either wrong shows up as diagonally
+ * skewed streaks rather than as a blank screen.
+ */
+void pgraph_metal_upload_surface_data(NV2AState *d,
+                                      MetalSurfaceBinding *surface, bool force)
+{
+    if (!(surface->upload_pending || force)) {
+        return;
+    }
+
+    PGRAPHState *pg = &d->pgraph;
+
+    surface->upload_pending = false;
+    surface->draw_time = pg->draw_time;
+
+    if (!surface->width || !surface->height || surface->texture == nil) {
+        return;
+    }
+
+    if (!surface->color) {
+        /* The host depth format is wider than the guest's, so a raw copy
+         * would be wrong; see the format map. */
+        return;
+    }
+
+    unsigned int bpp = surface->fmt.host_bytes_per_pixel;
+    uint8_t *base = d->vram_ptr + surface->vram_addr;
+
+    g_autofree uint8_t *unswizzled = NULL;
+    uint8_t *buf = base;
+
+    if (surface->swizzle) {
+        unswizzled = g_malloc(surface->size);
+        unswizzle_rect(base, surface->width, surface->height, unswizzled,
+                       surface->pitch, bpp);
+        buf = unswizzled;
+    }
+
+    /* replaceRegion: takes a source stride, so a wider guest pitch is fine
+     * as long as it is passed through rather than assumed to be width*bpp. */
+    unsigned int src_pitch = surface->pitch;
+    if (src_pitch < surface->width * bpp) {
+        /* Malformed; refuse rather than read past the row. */
+        return;
+    }
+
+    unsigned int w = MIN(surface->width, (unsigned int)surface->texture.width);
+    unsigned int h = MIN(surface->height,
+                         (unsigned int)surface->texture.height);
+    if (!w || !h) {
+        return;
+    }
+
+    if (pg->surface_scale_factor != 1) {
+        /* The texture is larger than the guest surface; a straight upload
+         * would only cover a corner of it. Scaled upload is not implemented,
+         * so leave the target alone rather than corrupt it. */
+        return;
+    }
+
+    [surface->texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
+                        mipmapLevel:0
+                          withBytes:buf
+                        bytesPerRow:src_pitch];
+}
+
 /* ------------------------------------------------------------------ */
 /* Binding.                                                            */
 /* ------------------------------------------------------------------ */
@@ -731,6 +813,10 @@ static void update_surface_part(NV2AState *d, bool upload, bool color)
         } else {
             r->zeta_binding = found;
         }
+
+        /* If guest memory is newer than the texture, pull it in before the
+         * next draw reads or blends against it. */
+        pgraph_metal_upload_surface_data(d, found, false);
 
         surface->buffer_dirty = false;
     }

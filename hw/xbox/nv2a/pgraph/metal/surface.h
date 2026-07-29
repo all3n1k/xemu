@@ -88,5 +88,8 @@ MetalSurfaceBinding *pgraph_metal_surface_get_within(NV2AState *d, hwaddr addr);
 void pgraph_metal_surface_invalidate(NV2AState *d, MetalSurfaceBinding *e);
 void pgraph_metal_surface_download_if_dirty(NV2AState *d,
                                             MetalSurfaceBinding *surface);
+void pgraph_metal_upload_surface_data(NV2AState *d,
+                                      MetalSurfaceBinding *surface,
+                                      bool force);
 
 #endif /* XEMU_NV2A_PGRAPH_METAL_SURFACE_H */
