@@ -1017,6 +1017,23 @@ void pgraph_metal_draw_end(NV2AState *d)
         /* Synchronous for now: the readback path reads the target straight
          * after, and there is no fencing yet. */
         [r->command_buffer waitUntilCompleted];
+
+        /*
+         * Check that the GPU actually accepted the work. A command buffer
+         * that errors out completes normally from the CPU's point of view,
+         * so without this a rejected draw is indistinguishable from one that
+         * rendered nothing.
+         */
+        if (r->command_buffer.status != MTLCommandBufferStatusCompleted) {
+            r->cmdbuf_errors++;
+            if (r->cmdbuf_errors < 5) {
+                NSError *e = r->command_buffer.error;
+                fprintf(stderr,
+                        "nv2a: metal: command buffer status=%ld error=%s\n",
+                        (long)r->command_buffer.status,
+                        e ? [[e localizedDescription] UTF8String] : "(none)");
+            }
+        }
         r->command_buffer = nil;
     }
 

@@ -1102,6 +1102,17 @@ void pgraph_metal_clear_surface(NV2AState *d, uint32_t parameter)
             [enc endEncoding];
             [cmd commit];
             [cmd waitUntilCompleted];
+            if (cmd.status != MTLCommandBufferStatusCompleted) {
+                static int once;
+                if (!once++) {
+                    fprintf(stderr,
+                            "nv2a: metal: clear command buffer status=%ld "
+                            "error=%s\n", (long)cmd.status,
+                            cmd.error ?
+                                [[cmd.error localizedDescription] UTF8String] :
+                                "(none)");
+                }
+            }
 
         }
     } else {

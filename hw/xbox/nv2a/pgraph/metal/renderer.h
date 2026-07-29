@@ -116,6 +116,9 @@ typedef struct PGRAPHMetalState {
     GHashTable               *texture_cache;
     GHashTable               *sampler_cache;
     id<MTLTexture>           white_texture;
+    id<MTLTexture>           white_texture_cube;
+    id<MTLTexture>           white_texture_3d;
+    unsigned long            texture_type_mismatch;
     unsigned long            texture_uploads;
     unsigned long            texture_unsupported;
     unsigned long            surface_as_texture;
@@ -134,6 +137,7 @@ typedef struct PGRAPHMetalState {
     unsigned long            unsupported_prims;
     unsigned long            unsupported_draws;
     unsigned long            inline_draws;
+    unsigned long            cmdbuf_errors;
     MTLVertexDescriptor      *pending_vd;
 } PGRAPHMetalState;
 

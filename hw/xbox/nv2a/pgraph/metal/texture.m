@@ -126,9 +126,20 @@ void pgraph_metal_init_textures(PGRAPHState *pg)
         (GDestroyNotify)CFRelease);
 
     /*
-     * White, so that a stage whose format is not handled yet still lets the
-     * geometry through the combiners instead of multiplying it to black.
+     * White fallbacks, one per texture type.
+     *
+     * The type matters as much as the contents: Metal rejects an entire draw
+     * if a bound texture's type does not match what the shader declared, and
+     * does so silently unless API validation is enabled. Binding a 2D
+     * fallback where the generated shader declared a cubemap therefore
+     * discards the draw rather than producing a wrongly-shaded one, which is
+     * indistinguishable from rendering nothing.
+     *
+     * White rather than black so a stage whose format is unimplemented still
+     * lets geometry through the combiners.
      */
+    uint32_t white = 0xFFFFFFFF;
+
     MTLTextureDescriptor *td = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                      width:1
@@ -136,12 +147,38 @@ void pgraph_metal_init_textures(PGRAPHState *pg)
                                  mipmapped:NO];
     td.storageMode = MTLStorageModeShared;
     r->white_texture = [r->device newTextureWithDescriptor:td];
-
-    uint32_t white = 0xFFFFFFFF;
     [r->white_texture replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
                         mipmapLevel:0
                           withBytes:&white
                         bytesPerRow:4];
+
+    MTLTextureDescriptor *cd = [MTLTextureDescriptor
+        textureCubeDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                        size:1
+                                   mipmapped:NO];
+    cd.storageMode = MTLStorageModeShared;
+    r->white_texture_cube = [r->device newTextureWithDescriptor:cd];
+    for (int face = 0; face < 6; face++) {
+        [r->white_texture_cube replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
+                                 mipmapLevel:0
+                                       slice:face
+                                   withBytes:&white
+                                 bytesPerRow:4
+                               bytesPerImage:4];
+    }
+
+    MTLTextureDescriptor *dd = [[MTLTextureDescriptor alloc] init];
+    dd.textureType = MTLTextureType3D;
+    dd.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    dd.width = 1; dd.height = 1; dd.depth = 1;
+    dd.storageMode = MTLStorageModeShared;
+    r->white_texture_3d = [r->device newTextureWithDescriptor:dd];
+    [r->white_texture_3d replaceRegion:MTLRegionMake3D(0, 0, 0, 1, 1, 1)
+                           mipmapLevel:0
+                                 slice:0
+                             withBytes:&white
+                           bytesPerRow:4
+                         bytesPerImage:4];
 }
 
 void pgraph_metal_finalize_textures(PGRAPHState *pg)
@@ -157,6 +194,8 @@ void pgraph_metal_finalize_textures(PGRAPHState *pg)
         r->sampler_cache = NULL;
     }
     r->white_texture = nil;
+    r->white_texture_cube = nil;
+    r->white_texture_3d = nil;
 }
 
 typedef struct MetalTextureKey {
@@ -339,10 +378,38 @@ void pgraph_metal_bind_textures(NV2AState *d, id<MTLRenderCommandEncoder> enc)
         bool enabled = pgraph_is_texture_stage_active(pg, i) &&
                        (ctl_0 & NV_PGRAPH_TEXCTL0_0_ENABLE);
 
+        /*
+         * The generated shader picks its sampler type from the same state
+         * (see get_sampler_type in psh.c), so derive the expected type the
+         * same way and make sure whatever is bound matches it. Metal discards
+         * an entire draw on a type mismatch, silently unless validation is
+         * on, so this has to agree with the shader exactly.
+         *
+         * Only inspect the shape for an enabled stage: pgraph_get_texture_shape
+         * asserts on the unconfigured state a disabled stage carries.
+         */
         id<MTLTexture> tex = r->white_texture;
+
         if (enabled) {
             TextureShape s = pgraph_get_texture_shape(pg, i);
+
+            id<MTLTexture> fallback = r->white_texture;
+            MTLTextureType want = MTLTextureType2D;
+            if (s.cubemap) {
+                fallback = r->white_texture_cube;
+                want = MTLTextureTypeCube;
+            } else if (s.dimensionality == 3) {
+                fallback = r->white_texture_3d;
+                want = MTLTextureType3D;
+            }
+
             tex = upload_texture(d, i, &s);
+            if (tex == nil || tex.textureType != want) {
+                if (tex != nil && tex != r->white_texture) {
+                    r->texture_type_mismatch++;
+                }
+                tex = fallback;
+            }
         }
 
         uint32_t filter = pgraph_reg_r(pg, NV_PGRAPH_TEXFILTER0 + i * 4);
