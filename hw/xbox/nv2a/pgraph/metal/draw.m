@@ -805,6 +805,24 @@ static id<MTLRenderCommandEncoder> begin_encoder(NV2AState *d)
         [enc setScissorRect:(MTLScissorRect){ xmin, ymin, sw, sh }];
     }
 
+    if (getenv("XEMU_METAL_VIEWPORT_STATS") && r->color_binding) {
+        static unsigned long vn;
+        if ((vn++ % 2000) == 0) {
+            fprintf(stderr,
+                    "viewport: target @%08lx tex=%lux%lu | vp=%ux%u "
+                    "scissor=%u,%u %ux%u | binding_dim=%ux%u clip=%u,%u %ux%u\n",
+                    (unsigned long)r->color_binding->vram_addr,
+                    (unsigned long)r->color_binding->texture.width,
+                    (unsigned long)r->color_binding->texture.height,
+                    vp_w, vp_h, xmin, ymin, sw, sh,
+                    pg->surface_binding_dim.width,
+                    pg->surface_binding_dim.height,
+                    pg->surface_shape.clip_x, pg->surface_shape.clip_y,
+                    pg->surface_shape.clip_width,
+                    pg->surface_shape.clip_height);
+        }
+    }
+
     /* Winding is reversed because clip-space y is inverted, matching GL. */
     [enc setFrontFacingWinding:(pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
                                 NV_PGRAPH_SETUPRASTER_FRONTFACE)

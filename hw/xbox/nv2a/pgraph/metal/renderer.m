@@ -272,15 +272,15 @@ static int pgraph_metal_get_framebuffer_surface(NV2AState *d)
     PGRAPHMetalState *r = pg->metal_renderer_state;
 
     /*
-     * The xemu UI composites with OpenGL (ui/xemu.c takes a GLuint here), so
-     * a Metal texture cannot be handed over directly. Returning 0 makes the
-     * UI fall back to uploading the guest framebuffer -- but that only shows
-     * anything if the rendered target has been copied back into guest RAM
-     * first, which nothing else triggers.
+     * The UI composites with OpenGL, so returning 0 makes it upload the guest
+     * framebuffer from VRAM. The dashboard's content is 3D -- it renders into
+     * a GPU surface -- so that surface has to be copied back into guest memory
+     * or the UI has nothing to show.
      *
-     * So locate the surface the CRTC is scanning out and force it down,
-     * synchronously, before returning. Costs a full readback per frame; a
-     * Metal-native display path (IOSurface shared with GL) would remove it.
+     * A previous revision skipped this when the surface was not draw_dirty, on
+     * the theory that the content was CPU-drawn and the copy was destroying
+     * it. That was based on misreading a sampled counter as a total; the guest
+     * does issue 3D draws, so the copy is required rather than harmful.
      */
     qemu_mutex_lock(&d->pfifo.lock);
 
@@ -290,55 +290,6 @@ static int pgraph_metal_get_framebuffer_surface(NV2AState *d)
     MetalSurfaceBinding *surface = pgraph_metal_surface_get_within(
         d, d->pcrtc.start + vga_display_params.line_offset);
     if (surface == NULL || !surface->color) {
-        qemu_mutex_unlock(&d->pfifo.lock);
-        return 0;
-    }
-
-    if (getenv("XEMU_METAL_TARGET_STATS")) {
-        static unsigned long dn;
-        if ((dn++ % 200) == 0) {
-            fprintf(stderr,
-                    "display-target: scanout @%08lx -> surface @%08lx %ux%u "
-                    "tex=%p draw_dirty=%d cleared=%d\n",
-                    (unsigned long)(d->pcrtc.start +
-                                    vga_display_params.line_offset),
-                    (unsigned long)surface->vram_addr, surface->width,
-                    surface->height, (__bridge void *)surface->texture,
-                    surface->draw_dirty, surface->cleared);
-        }
-    }
-
-    if (getenv("XEMU_METAL_SCANOUT_STATS")) {
-        static unsigned long sn;
-        if (1) {
-            const uint32_t *px = (const uint32_t *)(d->vram_ptr +
-                                                    surface->vram_addr);
-            size_t count = (size_t)surface->width * surface->height;
-            size_t nonblack = 0;
-            for (size_t i = 0; i < count; i++) {
-                if ((px[i] & 0x00FFFFFF) != 0) {
-                    nonblack++;
-                }
-            }
-            fprintf(stderr,
-                    "scanout-ram: crtc=%08lx surf=@%08lx %ux%u "
-                    "nonblack=%zu/%zu (%.1f%%) draw_dirty=%d\n",
-                    (unsigned long)(d->pcrtc.start +
-                                    vga_display_params.line_offset),
-                    (unsigned long)surface->vram_addr, surface->width,
-                    surface->height, nonblack, count,
-                    count ? 100.0 * nonblack / count : 0.0,
-                    surface->draw_dirty);
-        }
-    }
-
-    if (!surface->draw_dirty) {
-        /*
-         * Nothing has been rendered into this surface since it was last
-         * synchronized, so its guest memory is authoritative -- the 2D blit
-         * path writes the scanout buffer with the CPU. Downloading here
-         * would overwrite that with the (empty) GPU texture.
-         */
         qemu_mutex_unlock(&d->pfifo.lock);
         return 0;
     }
