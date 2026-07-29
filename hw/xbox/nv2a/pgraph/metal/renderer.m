@@ -289,6 +289,35 @@ static int pgraph_metal_get_framebuffer_surface(NV2AState *d)
 
     MetalSurfaceBinding *surface = pgraph_metal_surface_get_within(
         d, d->pcrtc.start + vga_display_params.line_offset);
+
+    /*
+     * DIAGNOSTIC (XEMU_METAL_NEWEST_SURFACE): ignore the CRTC address and
+     * take the most recently drawn colour surface instead. This is not
+     * correct behaviour -- it is a probe to establish whether the frame we
+     * want is simply in a different surface than the one being scanned out.
+     */
+    if (getenv("XEMU_METAL_NEWEST_SURFACE")) {
+        MetalSurfaceBinding *s, *newest = NULL;
+        QTAILQ_FOREACH(s, &r->surfaces, entry) {
+            if (s->color && s->draw_dirty &&
+                (newest == NULL || s->draw_time > newest->draw_time)) {
+                newest = s;
+            }
+        }
+        if (newest) {
+            static unsigned long pn;
+            if ((pn++ % 100) == 0) {
+                fprintf(stderr,
+                        "probe: crtc surface @%08lx -> using newest @%08lx "
+                        "%ux%u\n",
+                        surface ? (unsigned long)surface->vram_addr : 0,
+                        (unsigned long)newest->vram_addr, newest->width,
+                        newest->height);
+            }
+            surface = newest;
+        }
+    }
+
     if (surface == NULL || !surface->color) {
         qemu_mutex_unlock(&d->pfifo.lock);
         return 0;
