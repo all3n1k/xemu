@@ -6,6 +6,7 @@ specific_ss.add([metal, files(
 	'draw.m',
 	'vertex.m',
 	'texture.m',
+	'blit.m',
 	'shaders.m',
 	)])
 

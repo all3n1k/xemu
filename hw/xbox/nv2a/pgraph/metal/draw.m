@@ -939,7 +939,7 @@ void pgraph_metal_draw_end(NV2AState *d)
         if ((tn++ % 4000) == 0) {
             fprintf(stderr,
                     "draw-target: color @%08lx %ux%u (tex %lux%lu) aa=%u "
-                    "clip=%u,%u %ux%u\n",
+                    "clip=%u,%u %ux%u tex=%p\n",
                     (unsigned long)r->color_binding->vram_addr,
                     r->color_binding->width, r->color_binding->height,
                     (unsigned long)r->color_binding->texture.width,
@@ -947,7 +947,8 @@ void pgraph_metal_draw_end(NV2AState *d)
                     pg->surface_shape.anti_aliasing,
                     pg->surface_shape.clip_x, pg->surface_shape.clip_y,
                     pg->surface_shape.clip_width,
-                    pg->surface_shape.clip_height);
+                    pg->surface_shape.clip_height,
+                    (__bridge void *)r->color_binding->texture);
         }
     }
 
