@@ -552,13 +552,15 @@ static void surface_download(NV2AState *d, MetalSurfaceBinding *surface,
                     distinct_hint = 1;
                 }
             }
+            /* Alpha is masked out above, so a surface legitimately full of
+             * opaque black reads as 0% -- report the raw first pixel too. */
             fprintf(stderr,
                     "fb-stats #%d: %ux%u @%08lx  nonblack=%zu/%zu (%.1f%%)  "
-                    "varied=%s\n",
+                    "varied=%s first=%08x\n",
                     n, surface->width, surface->height,
                     (unsigned long)surface->vram_addr, nonblack, count,
                     count ? 100.0 * nonblack / count : 0.0,
-                    distinct_hint ? "yes" : "no");
+                    distinct_hint ? "yes" : "no", first);
         }
     }
 

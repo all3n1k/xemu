@@ -805,6 +805,37 @@ static id<MTLRenderCommandEncoder> begin_encoder(NV2AState *d)
         [enc setScissorRect:(MTLScissorRect){ xmin, ymin, sw, sh }];
     }
 
+    if (getenv("XEMU_METAL_TARGET_COUNTS") && r->color_binding) {
+        /* Totals per target. An earlier version sampled and I read the
+         * sample index as a total, twice. Count everything. */
+        static hwaddr addrs[16];
+        static unsigned long counts[16];
+        static int naddr;
+        static unsigned long total;
+        int idx = -1;
+        for (int i = 0; i < naddr; i++) {
+            if (addrs[i] == r->color_binding->vram_addr) {
+                idx = i;
+            }
+        }
+        if (idx < 0 && naddr < 16) {
+            idx = naddr++;
+            addrs[idx] = r->color_binding->vram_addr;
+            counts[idx] = 0;
+        }
+        if (idx >= 0) {
+            counts[idx]++;
+        }
+        if ((total++ % 1500) == 0) {
+            fprintf(stderr, "target-counts (total %lu):", total);
+            for (int i = 0; i < naddr; i++) {
+                fprintf(stderr, " @%08lx=%lu", (unsigned long)addrs[i],
+                        counts[i]);
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+
     if (getenv("XEMU_METAL_SURFACE_DUMP") && r->color_binding) {
         /* One full dump per distinct surface address, all fields, so the two
          * targets can be compared directly rather than reasoned about. */

@@ -323,6 +323,13 @@ static int pgraph_metal_get_framebuffer_surface(NV2AState *d)
         return 0;
     }
 
+    /*
+     * GL does this in its display path (gl/display.c, pgraph_gl_sync) before
+     * presenting: push guest memory into the surface texture so anything
+     * written outside the 3D pipeline is present. Metal was missing it.
+     */
+    pgraph_metal_upload_surface_data(d, surface, false);
+
     surface->frame_time = pg->frame_time;
     surface->download_pending = true;
 
