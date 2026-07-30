@@ -500,7 +500,11 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
         mstring_append(body, "  out.nv2a_position = oPos;\n");
         pgraph_msl_gen_vtx_out_pack(body);
         if (opts.debug_pos) {
-            mstring_append(body, "  dbgPos[nv2a_vid] = oPos;\n");
+            mstring_append(body,
+                           "  dbgPos[nv2a_vid * 4u + 0u] = oPos;\n"
+                           "  dbgPos[nv2a_vid * 4u + 1u] = oT0;\n"
+                           "  dbgPos[nv2a_vid * 4u + 2u] = v0;\n"
+                           "  dbgPos[nv2a_vid * 4u + 3u] = v9;\n");
         }
         mstring_append(body, "  return out;\n");
     } else if (opts.vulkan) {

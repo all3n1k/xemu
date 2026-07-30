@@ -206,10 +206,12 @@ typedef struct MetalTextureKey {
 } MetalTextureKey;
 
 static id<MTLTexture> upload_texture(NV2AState *d, int i,
-                                     const TextureShape *s)
+                                     const TextureShape *s, float *scale)
 {
     PGRAPHState *pg = &d->pgraph;
     PGRAPHMetalState *r = pg->metal_renderer_state;
+
+    *scale = 1.0f;
 
     /*
      * Surface-as-texture.
@@ -233,6 +235,9 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
     MetalSurfaceBinding *surf = pgraph_metal_surface_get(d, tex_addr);
     if (surf && surf->color && surf->texture != nil) {
         r->surface_as_texture++;
+        if (surf->width) {
+            *scale = (float)surf->texture.width / (float)surf->width;
+        }
         return surf->texture;
     }
 
@@ -327,6 +332,30 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
            bytesPerRow:pitch];
 
     r->texture_uploads++;
+
+    /* Dump what was actually uploaded, so a wrong image can be told apart
+     * from wrong coordinates. */
+    const char *dump = getenv("XEMU_METAL_DUMP_TEX");
+    if (dump && mf.pixel_format == MTLPixelFormatBGRA8Unorm) {
+        static unsigned seq;
+        if (seq < 10) {
+            char path[1024];
+            snprintf(path, sizeof(path), "%s%03u.raw", dump, seq++);
+            FILE *fp = fopen(path, "wb");
+            if (fp) {
+                uint32_t hdr[2] = { width, height };
+                fwrite(hdr, sizeof(hdr), 1, fp);
+                for (unsigned int y = 0; y < height; y++) {
+                    fwrite(src + (size_t)y * pitch, 4, width, fp);
+                }
+                fclose(fp);
+                fprintf(stderr,
+                        "tex dumped: %ux%u fmt=0x%x linear=%d pitch=%u -> %s\n",
+                        width, height, s->color_format, f.linear, pitch, path);
+            }
+        }
+    }
+
     g_hash_table_insert(r->texture_cache, k, (__bridge_retained void *)tex);
     return tex;
 }
@@ -389,6 +418,7 @@ void pgraph_metal_bind_textures(NV2AState *d, id<MTLRenderCommandEncoder> enc)
          * asserts on the unconfigured state a disabled stage carries.
          */
         id<MTLTexture> tex = r->white_texture;
+        r->texture_scale[i] = 1.0f;
 
         if (enabled) {
             TextureShape s = pgraph_get_texture_shape(pg, i);
@@ -403,12 +433,13 @@ void pgraph_metal_bind_textures(NV2AState *d, id<MTLRenderCommandEncoder> enc)
                 want = MTLTextureType3D;
             }
 
-            tex = upload_texture(d, i, &s);
+            tex = upload_texture(d, i, &s, &r->texture_scale[i]);
             if (tex == nil || tex.textureType != want) {
                 if (tex != nil && tex != r->white_texture) {
                     r->texture_type_mismatch++;
                 }
                 tex = fallback;
+                r->texture_scale[i] = 1.0f;
             }
         }
 

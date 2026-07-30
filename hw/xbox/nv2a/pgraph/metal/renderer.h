@@ -118,6 +118,14 @@ typedef struct PGRAPHMetalState {
     id<MTLTexture>           white_texture;
     id<MTLTexture>           white_texture_cube;
     id<MTLTexture>           white_texture_3d;
+    /*
+     * Ratio of host texels to guest texels for whatever is bound to each
+     * stage: 1.0 normally, the surface scale factor when the stage samples a
+     * live render target. The generated shader divides unnormalized (linear)
+     * texture coordinates by textureSize/texScale, so leaving this zero makes
+     * every linear texture sample at the wrong rate.
+     */
+    float                    texture_scale[NV2A_MAX_TEXTURES];
     unsigned long            texture_type_mismatch;
     unsigned long            texture_uploads;
     unsigned long            texture_unsupported;

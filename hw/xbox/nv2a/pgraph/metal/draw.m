@@ -252,6 +252,17 @@ static void bind_uniforms(PGRAPHState *pg, id<MTLRenderCommandEncoder> enc,
     pgraph_glsl_set_vsh_uniform_values(pg, &state->vsh, vsh_locs, &vsh_values);
     pgraph_glsl_set_psh_uniform_values(pg, psh_locs, &psh_values);
 
+    /*
+     * texScale is not part of the shared uniform setup -- each backend fills
+     * it from its own texture bindings, as GL and Vulkan do. It is the host
+     * texels per guest texel, and the generated shader divides unnormalized
+     * coordinates by textureSize/texScale. Leaving it zero made every linear
+     * texture tile across the surface instead of covering it once.
+     */
+    for (int i = 0; i < NV2A_MAX_TEXTURES; i++) {
+        psh_values.texScale[i] = r->texture_scale[i];
+    }
+
     MslUniformMember vsh_members[VshUniform__COUNT];
     MslUniformMember psh_members[PshUniform__COUNT];
 
@@ -1000,9 +1011,11 @@ void pgraph_metal_draw_begin(NV2AState *d)
     [r->encoder setDepthStencilState:get_depth_stencil_state(d)];
 
     if (!debug_shader) {
+        /* Textures first: binding them latches the per-stage scale that the
+         * fragment uniforms carry. */
+        pgraph_metal_bind_textures(d, r->encoder);
         bind_uniforms(pg, r->encoder, &sb->state);
         pgraph_metal_bind_vertex_buffers(d, r->encoder);
-        pgraph_metal_bind_textures(d, r->encoder);
     }
 }
 
@@ -1046,39 +1059,54 @@ void pgraph_metal_draw_end(NV2AState *d)
          * actually produced. Everything up to the rasterizer has been
          * measured; this is the one stage whose output was still inferred.
          */
-        if (getenv("XEMU_METAL_DEBUG_POS") && r->debug_pos_buffer &&
-            pg->inline_array_length) {
+        if (getenv("XEMU_METAL_DEBUG_POS") && r->debug_pos_buffer) {
             static int shown;
-            if (shown++ < 12) {
+            if (shown++ < 14) {
                 unsigned int n = r->debug_pos_count;
-                if (n > 8) {
-                    n = 8;
+                if (n > 4) {
+                    n = 4;
                 }
-                const float *in = (const float *)pg->inline_array;
                 const float *out = (const float *)r->debug_pos_buffer.contents;
 
                 fprintf(stderr,
-                        "vtx-dump: target @%08lx prim=%d verts=%u ff=%d\n",
+                        "  attr0: fmt=0x%x size=%u count=%u stride=%u "
+                        "const=%d | attr9: count=%u stride=%u const=%d | "
+                        "elems=%u arrays=%u inl_arr=%u inl_buf=%u\n",
+                        pg->vertex_attributes[0].format,
+                        pg->vertex_attributes[0].size,
+                        pg->vertex_attributes[0].count,
+                        pg->vertex_attributes[0].stride,
+                        r->attr_is_constant[0],
+                        pg->vertex_attributes[9].count,
+                        pg->vertex_attributes[9].stride,
+                        r->attr_is_constant[9],
+                        pg->inline_elements_length, pg->draw_arrays_length,
+                        pg->inline_array_length, pg->inline_buffer_length);
+                fprintf(stderr,
+                        "vtx-dump: target @%08lx prim=%d verts=%u ff=%d "
+                        "rect0=%d texScale0=%.2f\n",
                         r->color_binding
                             ? (unsigned long)r->color_binding->vram_addr
                             : 0UL,
                         pg->primitive_mode, r->debug_pos_count,
                         r->shader_binding
                             ? r->shader_binding->state.vsh.is_fixed_function
-                            : -1);
+                            : -1,
+                        r->shader_binding
+                            ? r->shader_binding->state.psh.rect_tex[0]
+                            : -1,
+                        r->texture_scale[0]);
                 for (unsigned int k = 0; k < n; k++) {
+                    const float *p = out + k * 16;
+                    const float *t = out + k * 16 + 4;
+                    const float *a0 = out + k * 16 + 8;
+                    const float *a9 = out + k * 16 + 12;
                     fprintf(stderr,
-                            "   v%u  in(%8.2f %8.2f)  ->  clip(%9.3f %9.3f "
-                            "%9.3f %9.3f)",
-                            k, in[k * 4 + 0], in[k * 4 + 1], out[k * 4 + 0],
-                            out[k * 4 + 1], out[k * 4 + 2], out[k * 4 + 3]);
-                    float w = out[k * 4 + 3];
-                    if (w != 0.0f && isfinite(w)) {
-                        fprintf(stderr, "  ndc(%7.3f %7.3f %7.3f)",
-                                out[k * 4 + 0] / w, out[k * 4 + 1] / w,
-                                out[k * 4 + 2] / w);
-                    }
-                    fprintf(stderr, "\n");
+                            "   v%u v0(%8.2f %8.2f %8.2f %6.2f)"
+                            " v9(%7.3f %7.3f) -> clip(%9.3f %9.3f %9.3f %9.3f)"
+                            " oT0(%8.3f %8.3f)\n",
+                            k, a0[0], a0[1], a0[2], a0[3], a9[0], a9[1],
+                            p[0], p[1], p[2], p[3], t[0], t[1]);
                 }
             }
         }
@@ -1245,14 +1273,18 @@ void pgraph_metal_flush_draw(NV2AState *d)
     [r->encoder setRenderPipelineState:pso];
 
     if (getenv("XEMU_METAL_DEBUG_POS")) {
-        const unsigned int max_verts = 4096;
+        /* Four float4 per vertex: clip position, texcoord 0, and the raw v0
+         * and v9 the shader fetched. Sized for the full 16-bit index range
+         * so the shader cannot write past the end. */
+        const unsigned int bytes = 65536 * 64;
         if (r->debug_pos_buffer == nil) {
             r->debug_pos_buffer =
-                [r->device newBufferWithLength:max_verts * 16
+                [r->device newBufferWithLength:bytes
                                        options:MTLResourceStorageModeShared];
         }
-        memset(r->debug_pos_buffer.contents, 0xff, max_verts * 16);
-        r->debug_pos_count = inline_count;
+        memset(r->debug_pos_buffer.contents, 0, bytes);
+        r->debug_pos_count = inline_count ? inline_count
+                                          : pg->inline_elements_length;
         [r->encoder setVertexBuffer:r->debug_pos_buffer
                              offset:0
                             atIndex:MSL_DEBUG_POS_BUFFER_INDEX];
