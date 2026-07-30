@@ -409,6 +409,80 @@ attributes; the uniform layout is verified and repacked member-by-member via
 `pgraph_msl_uniform_layout()` rather than memcpy'd; primitive expansion
 (fans, quads, line loops) is implemented on the draw path.
 
+## Open bug: the BIOS logo texture (2026-07-30)
+
+The boot animation runs end to end and reaches the logo phase. The
+wordmark renders. The X emblem renders as a regular grid of small
+repeated glyphs.
+
+Reproduce with `XEMU_METAL_FILMSTRIP=<prefix>` and
+`XEMU_GL_FILMSTRIP=<prefix>` (same capture, both backends, one file per
+displayed frame) plus `XEMU_METAL_DUMP_TEX` / `XEMU_GL_DUMP_TEX` (each
+texture dumped twice: `.src` = raw guest bytes before unswizzling,
+`.raw` = decoded, under a content-derived filename so the two backends'
+files pair up).
+
+What is established, by byte comparison rather than inference:
+
+  - The 1024x1024 swizzled logo texture decodes differently from GL in
+    602007 of 4194312 bytes.
+  - Its **raw source bytes** differ by exactly the same 602007. The
+    decode is not at fault.
+  - The 16x16, 128x128 and 256x256 swizzled textures decode
+    byte-identical to GL.
+  - Two Metal runs are byte-identical to each other. Deterministic.
+  - Both versions are substantially populated (1.29 MB vs 1.36 MB of
+    non-zero bytes) and differ in both directions, so it is two
+    different images, not a partial write or a timing snapshot.
+  - The texture lives at guest 0x01c54000, spans 4 MB, and is not backed
+    by any live surface. The nearest are a 1024x1024 zeta at 0x02054000
+    (exactly where the texture range ends) and a 1024x1024 colour
+    surface at 0x02454000.
+
+Disproven, each by measurement, each after being asserted with too much
+confidence first:
+
+  1. Bad unswizzle. Ruled out: other swizzled textures are identical and
+     the source bytes differ by the same count as the decoded ones.
+  2. Missing surface writeback. A fix was written (and kept, since the
+     gap is real -- see below) and changed the differing byte count not
+     at all.
+  3. The guest steering the texture off an occlusion query result.
+     Queries were implemented (also real, also kept) and the count again
+     did not move.
+
+**Caveat on the comparison itself, unresolved:** the two backends' dumps
+are paired by `widthxheight_format` filename. Metal's guest address is
+logged (0x01c54000); GL's log prints a host pointer, which differs
+between runs, so it was never confirmed that both backends dumped the
+*same* texture rather than two different 1024x1024 fmt-0x6 textures.
+Confirming this is the first thing to do -- it could invalidate the
+602007 figure entirely. `upload_gl_texture()` does not have `NV2AState`
+in scope; the offset is available in the caller around gl/texture.c:343.
+
+Next after that: diff the draw sequence between backends -- which draws
+happen, in what order, into which surface. That has never been run and
+would catch a whole class of causes at once.
+
+Two fixes landed while chasing this, neither of which fixed it, both
+worth keeping because GL has the equivalent behaviour:
+
+  - **Surface writeback before texture sampling.** The CPU-access
+    callback that downloads a rendered surface when the guest touches
+    its memory registers only under TCG, and Apple Silicon runs under
+    HVF, so it never exists.
+  - **Occlusion queries.** `get_report` returned a constant zero and
+    `clear_report_value` was empty, so every query answered "nothing
+    visible". Now counts into a Metal visibility result buffer, one slot
+    per draw, summed when the guest reads the report.
+
+Also still open: Metal runs the animation noticeably slower than GL in
+wall-clock terms, so the two backends' frame N are not the same
+animation moment. And user-reported, unverified: white streaks at the
+very start, and glow orbs that move wrongly. The orbs were the
+motivation for implementing occlusion queries; whether that fixed them
+has not been checked.
+
 ## What to do next, in order
 
 1. **Finish correctness on the BIOS.** Texture formats and the gaps above.

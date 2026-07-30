@@ -559,7 +559,7 @@ static void upload_gl_texture(GLenum gl_target,
                         }
                         fprintf(stderr,
                                 "GL tex dumped: %ux%u fmt=0x%x pitch=%u "
-                                "addr=%p -> %s\n",
+                                "src=%p -> %s\n",
                                 width, height, s.color_format, dp,
                                 texture_data, tpath);
                     }

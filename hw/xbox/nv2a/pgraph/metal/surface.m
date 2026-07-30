@@ -593,6 +593,21 @@ void pgraph_metal_download_surfaces_overlapping(NV2AState *d, hwaddr addr,
 {
     PGRAPHMetalState *r = d->pgraph.metal_renderer_state;
 
+    if (getenv("XEMU_METAL_TRACE_TEXSRC") && len > 1000000) {
+        static int n;
+        if (n++ < 3) {
+            fprintf(stderr, "texsrc: texture @%08lx len=%lu; live surfaces:",
+                    (unsigned long)addr, (unsigned long)len);
+            MetalSurfaceBinding *q;
+            QTAILQ_FOREACH (q, &r->surfaces, entry) {
+                fprintf(stderr, " @%08lx(%ux%u%s%s)",
+                        (unsigned long)q->vram_addr, q->width, q->height,
+                        q->color ? "c" : "z", q->draw_dirty ? ",dirty" : "");
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+
     MetalSurfaceBinding *surface;
     QTAILQ_FOREACH (surface, &r->surfaces, entry) {
         if (surface->color && surface->draw_dirty &&
