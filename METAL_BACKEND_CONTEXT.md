@@ -493,6 +493,68 @@ very start, and glow orbs that move wrongly. The orbs were the
 motivation for implementing occlusion queries; whether that fixed them
 has not been checked.
 
+## The emblem bug: it is the missing geometry shader (2026-07-30)
+
+Traced end to end. The chain:
+
+    11 draws -> surface @02454000 -> blit -> 0x01c54000
+      -> sampled as a swizzled texture -> the grid on screen
+
+Everything upstream of the fragment stage checks out:
+
+  - The 11 draws are prim=5, plain indexed TRIANGLES, no expansion, and
+    is_fixed_function=1.
+  - The MSL and GLSL generated from that same VshState differ by exactly
+    three lines -- the entry signature and the two GL epilogue lines that
+    MSL replaces with out.nv2a_position / out.nv2a_pointSize. Every
+    computed statement is identical. Dump both with XEMU_METAL_DUMP_VSH.
+  - Uniforms are right: surfaceSize=(1024,1024), binding_dim 1024x1024,
+    clipRegion (0,0,1024,1024).
+  - The transform is right. Hand-checked against the dumped compositeMat
+    for vertex (30.40, -132.14, -33.28): w = dot(pos, c[3]) = 165.82 vs
+    the shader's 165.859, and x resolves to 55.08 vs 55.212.
+  - Culling is not it (XEMU_METAL_NO_CULL is slightly worse: 1697136
+    differing bytes vs 1661439).
+  - Depth testing is not simply inverted either (XEMU_METAL_DEPTH_ALWAYS
+    is worse again at 1764672).
+
+What is left is psh.c's depth computation, which barycentrically
+interpolates across the *triangle*:
+
+    precise float bc1 = area(unscaled_xy, vtxPos2.xy, vtxPos0.xy);
+    precise float bc2 = area(unscaled_xy, vtxPos0.xy, vtxPos1.xy);
+    precise float zvalue = vtxPos0.w + (bc1*(vtxPos1.w - vtxPos0.w) + ...)
+    zvalue += depthFactor*triMZ;
+
+vtxPos0/1/2 and triMZ are per-triangle values that only a geometry shader
+can supply. **Metal has no geometry shaders.** The vertex stage currently
+sets vtxPos0 = vtxPos1 = vtxPos2 = vtxPos and triMZ = 0, which makes the
+interpolation degenerate, so every fragment of every triangle gets the
+wrong depth. On a flat 2D composite that is invisible; on the 3D emblem
+the faces occlude each other wrongly and it tears into radial slivers.
+
+Note both branches of that code use vtxPos0/1/2 -- the non-perspective
+path at psh.c:1098 as well as the z_perspective path -- so this is not
+limited to w-buffered draws. It affects every triangle in every title.
+
+This is the architectural gap listed as "no geometry shader stage" from
+the very first handoff, now with a confirmed visible symptom. It is the
+single highest-value thing left, and it is not a small fix. The options:
+
+  1. Vertex pulling: drop [[stage_in]], have the vertex shader fetch all
+     three vertices of its triangle by index from the buffers itself and
+     compute vtxPos0/1/2 directly. Needs the index buffer readable from
+     the shader and a provoking-vertex convention -- note Metal's is
+     fixed to "first", where GL and Vulkan default to "last".
+  2. CPU triangle expansion: expand every draw so each triangle owns
+     three unique vertices, then write the per-triangle values as flat
+     attributes. Simpler, much more bandwidth.
+  3. A compute prepass that computes per-triangle data into a buffer the
+     fragment shader indexes by primitive ID.
+
+The MoltenVK forks linked from the xemu Discord hit the same wall (Metal
+has no geometry shaders) and are worth reading before choosing.
+
 ## What to do next, in order
 
 1. **Finish correctness on the BIOS.** Texture formats and the gaps above.

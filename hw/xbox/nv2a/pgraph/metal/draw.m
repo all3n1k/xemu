@@ -282,9 +282,20 @@ static void bind_uniforms(PGRAPHState *pg, id<MTLRenderCommandEncoder> enc,
     upload_uniforms(vsh_buf, (const uint8_t *)&vsh_values, vsh_members,
                     VshUniform__COUNT);
 
-    if (getenv("XEMU_METAL_DUMP_UNIFORMS")) {
+    const char *uonly = getenv("XEMU_METAL_DEBUG_POS_TARGET");
+    bool utarget_ok =
+        !uonly || (r->color_binding &&
+                   (unsigned long)r->color_binding->vram_addr ==
+                       strtoul(uonly, NULL, 16));
+    if (getenv("XEMU_METAL_DUMP_UNIFORMS") && utarget_ok) {
         static int n;
-        if (n++ < 3) {
+        if (n++ < 2) {
+            fprintf(stderr, "  [ff=%d target=@%08lx binding_dim=%ux%u]\n",
+                    state->vsh.is_fixed_function,
+                    r->color_binding
+                        ? (unsigned long)r->color_binding->vram_addr : 0UL,
+                    pg->surface_binding_dim.width,
+                    pg->surface_binding_dim.height);
             fprintf(stderr,
                     "uniforms: surfaceSize=(%.1f,%.1f) clipRange=(%g,%g,%g,%g)\n"
                     "  compositeMat c[0..3]:\n"
