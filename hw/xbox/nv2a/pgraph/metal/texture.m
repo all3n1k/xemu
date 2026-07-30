@@ -295,6 +295,11 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
     hwaddr palette_addr =
         pgraph_get_texture_palette_phys_addr_length(pg, i, &palette_len);
 
+    /* Rendered content may still live only in a surface texture; flush it to
+     * guest memory before reading that memory as texture data. */
+    pgraph_metal_download_surfaces_overlapping(
+        d, texture_addr, pgraph_get_texture_length(pg, (TextureShape *)s));
+
     const uint8_t *texture_data = d->vram_ptr + texture_addr;
     const uint8_t *palette_data =
         palette_len ? d->vram_ptr + palette_addr : NULL;

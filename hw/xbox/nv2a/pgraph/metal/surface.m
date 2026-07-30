@@ -578,6 +578,31 @@ static void surface_download(NV2AState *d, MetalSurfaceBinding *surface,
     surface->draw_dirty = false;
 }
 
+/*
+ * Write back any rendered surface whose memory overlaps [addr, addr+len).
+ *
+ * The CPU-access callback that would normally catch this is registered only
+ * under TCG, and Apple Silicon runs under HVF, so a guest that renders into a
+ * surface and then samples that memory as a texture would otherwise read
+ * whatever was in RAM before the draw. Measured: the BIOS logo texture came
+ * back differing from the GL backend in 602007 of 4194312 source bytes for
+ * exactly this reason.
+ */
+void pgraph_metal_download_surfaces_overlapping(NV2AState *d, hwaddr addr,
+                                                hwaddr len)
+{
+    PGRAPHMetalState *r = d->pgraph.metal_renderer_state;
+
+    MetalSurfaceBinding *surface;
+    QTAILQ_FOREACH (surface, &r->surfaces, entry) {
+        if (surface->color && surface->draw_dirty &&
+            check_surface_overlaps_range(surface, addr, len)) {
+            surface_download(d, surface, false);
+            surface->draw_dirty = false;
+        }
+    }
+}
+
 void pgraph_metal_surface_download_if_dirty(NV2AState *d,
                                             MetalSurfaceBinding *surface)
 {
