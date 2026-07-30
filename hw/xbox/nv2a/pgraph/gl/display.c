@@ -411,6 +411,44 @@ void pgraph_gl_sync(NV2AState *d)
     gl_fence();
     assert(glGetError() == GL_NO_ERROR);
 
+    /*
+     * XEMU_GL_FILMSTRIP=<prefix>: same capture the Metal backend takes, at
+     * the equivalent point, so the two backends can be compared frame for
+     * frame rather than described.
+     */
+    const char *strip = getenv("XEMU_GL_FILMSTRIP");
+    if (strip) {
+        static unsigned long fn;
+        unsigned long every = 1;
+        const char *e = getenv("XEMU_GL_FILMSTRIP_EVERY");
+        if (e) {
+            every = MAX(1UL, strtoul(e, NULL, 10));
+        }
+        unsigned long f = fn++;
+        if ((f % every) == 0 && (f / every) < 200) {
+            GLint tw = 0, th = 0;
+            glBindTexture(GL_TEXTURE_2D, surface->gl_buffer);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
+            if (tw > 0 && th > 0) {
+                size_t n = (size_t)tw * th;
+                uint32_t *buf = g_malloc(n * 4);
+                glGetTexImage(GL_TEXTURE_2D, 0, GL_BGRA,
+                              GL_UNSIGNED_INT_8_8_8_8_REV, buf);
+                char path[1024];
+                snprintf(path, sizeof(path), "%s%04lu.raw", strip, f / every);
+                FILE *fp = fopen(path, "wb");
+                if (fp) {
+                    uint32_t hdr[2] = { (uint32_t)tw, (uint32_t)th };
+                    fwrite(hdr, sizeof(hdr), 1, fp);
+                    fwrite(buf, 4, n, fp);
+                    fclose(fp);
+                }
+                g_free(buf);
+            }
+        }
+    }
+
     /* Render framebuffer in display context */
     glo_set_current(g_nv2a_context_display);
     render_display(d, surface);

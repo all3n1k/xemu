@@ -235,10 +235,40 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
     MetalSurfaceBinding *surf = pgraph_metal_surface_get(d, tex_addr);
     if (surf && surf->color && surf->texture != nil) {
         r->surface_as_texture++;
+        if (getenv("XEMU_METAL_TRACE_SURFTEX")) {
+            static unsigned long n;
+            if ((n++ % 500) == 0) {
+                fprintf(stderr,
+                        "surf-as-tex: stage %d samples @%08lx (%ux%u) while "
+                        "drawing into @%08lx\n",
+                        i, (unsigned long)surf->vram_addr, surf->width,
+                        surf->height,
+                        r->color_binding
+                            ? (unsigned long)r->color_binding->vram_addr
+                            : 0UL);
+            }
+        }
         if (surf->width) {
             *scale = (float)surf->texture.width / (float)surf->width;
         }
         return surf->texture;
+    }
+
+    if (getenv("XEMU_METAL_TRACE_SURFTEX")) {
+        MetalSurfaceBinding *within =
+            pgraph_metal_surface_get_within(d, tex_addr);
+        if (within && within->color) {
+            static unsigned long n;
+            if ((n++ % 200) == 0) {
+                fprintf(stderr,
+                        "surf-as-tex MISS: stage %d addr %08lx falls inside "
+                        "@%08lx (%ux%u) but is not its base -- uploading from "
+                        "guest memory instead\n",
+                        i, (unsigned long)tex_addr,
+                        (unsigned long)within->vram_addr, within->width,
+                        within->height);
+            }
+        }
     }
 
     MetalTextureFormat mf = metal_texture_format(s->color_format);
@@ -338,9 +368,15 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
     const char *dump = getenv("XEMU_METAL_DUMP_TEX");
     if (dump && mf.pixel_format == MTLPixelFormatBGRA8Unorm) {
         static unsigned seq;
-        if (seq < 10) {
+        unsigned from = 0;
+        const char *fs = getenv("XEMU_METAL_DUMP_TEX_FROM");
+        if (fs) {
+            from = (unsigned)strtoul(fs, NULL, 10);
+        }
+        unsigned cur = seq++;
+        if (cur >= from && cur < from + 12) {
             char path[1024];
-            snprintf(path, sizeof(path), "%s%03u.raw", dump, seq++);
+            snprintf(path, sizeof(path), "%s%03u.raw", dump, cur);
             FILE *fp = fopen(path, "wb");
             if (fp) {
                 uint32_t hdr[2] = { width, height };
@@ -350,8 +386,10 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
                 }
                 fclose(fp);
                 fprintf(stderr,
-                        "tex dumped: %ux%u fmt=0x%x linear=%d pitch=%u -> %s\n",
-                        width, height, s->color_format, f.linear, pitch, path);
+                        "tex dumped: %ux%u fmt=0x%x linear=%d pitch=%u "
+                        "guest_pitch=%u -> %s\n",
+                        width, height, s->color_format, f.linear, pitch,
+                        s->pitch, path);
             }
         }
     }

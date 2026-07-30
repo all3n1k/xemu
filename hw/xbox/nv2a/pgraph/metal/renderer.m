@@ -339,6 +339,44 @@ static int pgraph_metal_get_framebuffer_surface(NV2AState *d)
     qemu_mutex_unlock(&d->pfifo.lock);
     qemu_event_wait(&r->downloads_complete);
 
+    /*
+     * XEMU_METAL_FILMSTRIP=<prefix>: one file per displayed frame, sampled.
+     * This hook is the frame the UI is about to show, so a sequence taken
+     * here is the animation as it actually appears -- single-moment dumps
+     * cannot show whether it plays correctly end to end.
+     */
+    const char *strip = getenv("XEMU_METAL_FILMSTRIP");
+    if (strip && surface->texture != nil &&
+        surface->texture.storageMode == MTLStorageModeShared) {
+        static unsigned long fn;
+        unsigned long every = 1;
+        const char *e = getenv("XEMU_METAL_FILMSTRIP_EVERY");
+        if (e) {
+            every = MAX(1UL, strtoul(e, NULL, 10));
+        }
+        unsigned long f = fn++;
+        if ((f % every) == 0 && (f / every) < 200) {
+            unsigned tw = (unsigned)surface->texture.width;
+            unsigned th = (unsigned)surface->texture.height;
+            size_t n = (size_t)tw * th;
+            uint32_t *buf = g_malloc(n * 4);
+            [surface->texture getBytes:buf
+                           bytesPerRow:tw * 4
+                            fromRegion:MTLRegionMake2D(0, 0, tw, th)
+                           mipmapLevel:0];
+            char path[1024];
+            snprintf(path, sizeof(path), "%s%04lu.raw", strip, f / every);
+            FILE *fp = fopen(path, "wb");
+            if (fp) {
+                uint32_t hdr[2] = { tw, th };
+                fwrite(hdr, sizeof(hdr), 1, fp);
+                fwrite(buf, 4, n, fp);
+                fclose(fp);
+            }
+            g_free(buf);
+        }
+    }
+
     return 0;
 }
 
