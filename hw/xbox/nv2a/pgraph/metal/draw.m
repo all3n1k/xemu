@@ -1085,9 +1085,15 @@ void pgraph_metal_draw_end(NV2AState *d)
          * produced. Everything up to the rasterizer has been measured; this
          * is the one stage whose output was otherwise only inferred.
          */
-        if (getenv("XEMU_METAL_DEBUG_POS") && r->debug_pos_buffer) {
+        const char *only = getenv("XEMU_METAL_DEBUG_POS_TARGET");
+        bool pos_target_ok =
+            !only || (r->color_binding &&
+                      (unsigned long)r->color_binding->vram_addr ==
+                          strtoul(only, NULL, 16));
+        if (getenv("XEMU_METAL_DEBUG_POS") && r->debug_pos_buffer &&
+            pos_target_ok) {
             static int shown;
-            if (shown++ < 14) {
+            if (shown++ < 3) {
                 unsigned int n = r->debug_pos_count;
                 if (n > 12) {
                     n = 12;
@@ -1258,7 +1264,12 @@ void pgraph_metal_draw_end(NV2AState *d)
 
     if (getenv("XEMU_DRAW_TRACE")) {
         static unsigned long dn;
-        if (dn < 4000) {
+        static unsigned long cap;
+        if (!cap) {
+            const char *c = getenv("XEMU_DRAW_TRACE_MAX");
+            cap = c ? strtoul(c, NULL, 10) : 4000;
+        }
+        if (dn < cap) {
             fprintf(stderr, "D%lu %08lx p%d e%u a%u ia%u ib%u t%08lx\n", dn,
                     r->color_binding
                         ? (unsigned long)r->color_binding->vram_addr : 0UL,

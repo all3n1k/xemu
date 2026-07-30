@@ -336,7 +336,12 @@ void pgraph_gl_draw_end(NV2AState *d)
         PGRAPHState *pg_t = &d->pgraph;
         PGRAPHGLState *r_t = pg_t->gl_renderer_state;
         static unsigned long dn;
-        if (dn < 4000) {
+        static unsigned long cap;
+        if (!cap) {
+            const char *c = getenv("XEMU_DRAW_TRACE_MAX");
+            cap = c ? strtoul(c, NULL, 10) : 4000;
+        }
+        if (dn < cap) {
             fprintf(stderr, "D%lu %08lx p%d e%u a%u ia%u ib%u t%08lx\n", dn,
                     r_t->color_binding
                         ? (unsigned long)r_t->color_binding->vram_addr : 0UL,

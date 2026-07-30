@@ -122,6 +122,39 @@ void pgraph_gl_image_blit(NV2AState *d)
     }
 
     SurfaceBinding *surf_src = pgraph_gl_surface_get(d, source_addr);
+    /* GPU-side content of the blit source, before any download or swizzle:
+     * separates "rendered wrong" from "written back wrong". */
+    const char *gbd = getenv("XEMU_BLIT_DUMP");
+    if (gbd && surf_src && surf_src->gl_buffer) {
+        static int gbn;
+        if (gbn < 4) {
+            GLint tw = 0, th = 0;
+            glBindTexture(GL_TEXTURE_2D, surf_src->gl_buffer);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
+            glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
+            if (tw > 0 && th > 0) {
+                size_t n = (size_t)tw * th;
+                uint32_t *buf = g_malloc(n * 4);
+                glGetTexImage(GL_TEXTURE_2D, 0, GL_BGRA,
+                              GL_UNSIGNED_INT_8_8_8_8_REV, buf);
+                char path[1024];
+                snprintf(path, sizeof(path), "%s_src%08lx_%d.raw", gbd,
+                         (unsigned long)source_addr, gbn++);
+                FILE *fp = fopen(path, "wb");
+                if (fp) {
+                    uint32_t hdr[2] = { (uint32_t)tw, (uint32_t)th };
+                    fwrite(hdr, sizeof(hdr), 1, fp);
+                    fwrite(buf, 4, n, fp);
+                    fclose(fp);
+                    fprintf(stderr,
+                            "GL blit-src dumped: @%08lx tex %dx%d -> %s\n",
+                            (unsigned long)source_addr, tw, th, path);
+                }
+                g_free(buf);
+            }
+        }
+    }
+
     if (getenv("XEMU_BLIT_TRACE") && surf_src) {
         fprintf(stderr, "GL blit-src @%08lx %ux%u swizzle=%d draw_dirty=%d\n",
                 (unsigned long)source_addr, surf_src->width, surf_src->height,
