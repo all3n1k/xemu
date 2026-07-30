@@ -528,6 +528,43 @@ static void upload_gl_texture(GLenum gl_target,
                     s, unswizzled, palette_data, width, height, 1, pitch, 0,
                     NULL);
                 uint8_t *pixel_data = converted ? converted : unswizzled;
+
+                /* Counterpart of XEMU_METAL_DUMP_TEX, at the equivalent
+                 * point: after unswizzling and any palette/format
+                 * conversion, immediately before upload. Same filename
+                 * scheme so the two backends' buffers can be diffed. */
+                const char *tdump = getenv("XEMU_GL_DUMP_TEX");
+                if (tdump && level == 0) {
+                    unsigned int dp = converted ? width * 4 : pitch;
+                    char tpath[1024];
+                    snprintf(tpath, sizeof(tpath), "%s_%ux%u_f%02x.raw", tdump,
+                             width, height, s.color_format);
+                    FILE *tfp = fopen(tpath, "wb");
+                    if (tfp) {
+                        uint32_t thdr[2] = { width, height };
+                        fwrite(thdr, sizeof(thdr), 1, tfp);
+                        for (unsigned int ty = 0; ty < height; ty++) {
+                            fwrite(pixel_data + (size_t)ty * dp, 4, width,
+                                   tfp);
+                        }
+                        fclose(tfp);
+                        snprintf(tpath, sizeof(tpath), "%s_%ux%u_f%02x.src",
+                                 tdump, width, height, s.color_format);
+                        FILE *sfp = fopen(tpath, "wb");
+                        if (sfp) {
+                            fwrite(texture_data, 1,
+                                   (size_t)width * height * f.bytes_per_pixel,
+                                   sfp);
+                            fclose(sfp);
+                        }
+                        fprintf(stderr,
+                                "GL tex dumped: %ux%u fmt=0x%x pitch=%u "
+                                "addr=%p -> %s\n",
+                                width, height, s.color_format, dp,
+                                texture_data, tpath);
+                    }
+                }
+
                 unsigned int tex_width = width;
                 unsigned int tex_height = height;
 

@@ -376,7 +376,8 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
         unsigned cur = seq++;
         if (cur >= from && cur < from + 12) {
             char path[1024];
-            snprintf(path, sizeof(path), "%s%03u.raw", dump, cur);
+            snprintf(path, sizeof(path), "%s_%ux%u_f%02x.raw", dump, width,
+                     height, s->color_format);
             FILE *fp = fopen(path, "wb");
             if (fp) {
                 uint32_t hdr[2] = { width, height };
@@ -385,11 +386,21 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
                     fwrite(src + (size_t)y * pitch, 4, width, fp);
                 }
                 fclose(fp);
+            /* Raw guest bytes before unswizzling, so the source can be
+             * compared independently of the decode. */
+            snprintf(path, sizeof(path), "%s_%ux%u_f%02x.src", dump, width,
+                     height, s->color_format);
+            FILE *sp2 = fopen(path, "wb");
+            if (sp2) {
+                fwrite(texture_data, 1, (size_t)width * height *
+                                            f.bytes_per_pixel, sp2);
+                fclose(sp2);
+            }
                 fprintf(stderr,
                         "tex dumped: %ux%u fmt=0x%x linear=%d pitch=%u "
-                        "guest_pitch=%u -> %s\n",
+                        "guest_pitch=%u addr=%08lx -> %s\n",
                         width, height, s->color_format, f.linear, pitch,
-                        s->pitch, path);
+                        s->pitch, (unsigned long)texture_addr, path);
             }
         }
     }
