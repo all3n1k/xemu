@@ -161,6 +161,15 @@ typedef struct PGRAPHMetalState {
 
     /* Diagnostics: XEMU_METAL_DEBUG_POS makes the vertex shader also write
      * its computed clip position here, so the transform can be read back. */
+    /*
+     * Occlusion queries. Metal counts samples that pass depth/stencil into a
+     * visibility buffer attached to the render pass; one slot per counted
+     * draw, summed when the guest asks for the report.
+     */
+    id<MTLBuffer>            visibility_buffer;
+    unsigned int             visibility_slot;
+    uint64_t                 zpass_pixel_count_result;
+
     id<MTLBuffer>            debug_pos_buffer;
     unsigned int             debug_pos_count;
 } PGRAPHMetalState;

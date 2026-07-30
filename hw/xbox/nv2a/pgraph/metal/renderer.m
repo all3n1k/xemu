@@ -168,7 +168,7 @@ static void pgraph_metal_finalize(NV2AState *d)
 
 static void pgraph_metal_clear_report_value(NV2AState *d)
 {
-    /* TODO Stage B: end any in-flight occlusion query. */
+    pgraph_metal_reset_zpass(d);
 }
 
 
@@ -188,8 +188,8 @@ static void pgraph_metal_flip_stall(NV2AState *d)
 
 static void pgraph_metal_get_report(NV2AState *d, uint32_t parameter)
 {
-    /* Z-pass pixel count report. No queries in flight yet -> 0. */
-    pgraph_write_zpass_pixel_cnt_report(d, parameter, 0);
+    pgraph_write_zpass_pixel_cnt_report(d, parameter,
+                                        pgraph_metal_collect_zpass(d));
 }
 
 static void pgraph_metal_pre_savevm_trigger(NV2AState *d)

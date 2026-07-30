@@ -932,6 +932,14 @@ static id<MTLRenderCommandEncoder> begin_encoder(NV2AState *d)
         rp.depthAttachment.storeAction = MTLStoreActionDontCare;
     }
 
+    if (r->visibility_buffer == nil) {
+        r->visibility_buffer =
+            [r->device newBufferWithLength:METAL_VISIBILITY_SLOTS * 8
+                                   options:MTLResourceStorageModeShared];
+        memset(r->visibility_buffer.contents, 0, METAL_VISIBILITY_SLOTS * 8);
+    }
+    rp.visibilityResultBuffer = r->visibility_buffer;
+
     if (r->command_buffer == nil) {
         r->command_buffer = [r->queue commandBuffer];
     }
@@ -1367,6 +1375,22 @@ void pgraph_metal_flush_draw(NV2AState *d)
     }
     [r->encoder setRenderPipelineState:pso];
 
+    /*
+     * Occlusion query. The guest uses the z-pass count to drive effects --
+     * the BIOS boot animation scales its lens flares by it -- so reporting a
+     * constant zero, as this backend did until now, makes those effects
+     * behave as if nothing were ever visible.
+     */
+    if (pg->zpass_pixel_count_enable &&
+        r->visibility_slot < METAL_VISIBILITY_SLOTS) {
+        [r->encoder setVisibilityResultMode:MTLVisibilityResultModeCounting
+                                     offset:r->visibility_slot * 8];
+        r->visibility_slot++;
+    } else {
+        [r->encoder setVisibilityResultMode:MTLVisibilityResultModeDisabled
+                                     offset:0];
+    }
+
     if (getenv("XEMU_METAL_DEBUG_POS")) {
         /* Four float4 per vertex: clip position, texcoord 0, and the raw v0
          * and v9 the shader fetched. Sized for the full 16-bit index range
@@ -1526,6 +1550,39 @@ void pgraph_metal_flush_draw(NV2AState *d)
         r->draws_issued++;
         r->expanded_prims++;
     }
+}
+
+uint64_t pgraph_metal_collect_zpass(NV2AState *d)
+{
+    PGRAPHMetalState *r = d->pgraph.metal_renderer_state;
+
+    if (r->visibility_slot == 0) {
+        return r->zpass_pixel_count_result;
+    }
+
+    /* The counts are only in the buffer once the GPU has retired the pass. */
+    pgraph_metal_flush_gpu(d, true);
+
+    const uint64_t *v = (const uint64_t *)r->visibility_buffer.contents;
+    for (unsigned int i = 0; i < r->visibility_slot; i++) {
+        r->zpass_pixel_count_result += v[i];
+    }
+    memset(r->visibility_buffer.contents, 0, (size_t)r->visibility_slot * 8);
+    r->visibility_slot = 0;
+
+    return r->zpass_pixel_count_result;
+}
+
+void pgraph_metal_reset_zpass(NV2AState *d)
+{
+    PGRAPHMetalState *r = d->pgraph.metal_renderer_state;
+
+    if (r->visibility_buffer != nil && r->visibility_slot) {
+        memset(r->visibility_buffer.contents, 0,
+               (size_t)r->visibility_slot * 8);
+    }
+    r->visibility_slot = 0;
+    r->zpass_pixel_count_result = 0;
 }
 
 void pgraph_metal_report_shader_stats(PGRAPHState *pg)

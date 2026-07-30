@@ -42,6 +42,12 @@ void pgraph_metal_flush_draw(NV2AState *d);
  */
 void pgraph_metal_flush_gpu(NV2AState *d, bool wait);
 
+#define METAL_VISIBILITY_SLOTS 4096
+
+/* Sum the occlusion-query counts recorded since the last reset. */
+uint64_t pgraph_metal_collect_zpass(NV2AState *d);
+void pgraph_metal_reset_zpass(NV2AState *d);
+
 void pgraph_metal_report_shader_stats(PGRAPHState *pg);
 
 #endif /* XEMU_NV2A_PGRAPH_METAL_DRAW_H */
