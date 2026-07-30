@@ -46,6 +46,10 @@
  * Textures and samplers are bound one per NV2A texture stage. */
 #define MSL_UNIFORM_BUFFER_INDEX 0
 
+/* Vertex attribute buffers occupy slots 1..16, so a diagnostic buffer sits
+ * safely above them. Only bound when the generator emits the debug write. */
+#define MSL_DEBUG_POS_BUFFER_INDEX 20
+
 /* Shared compatibility prologue: typedefs plus the GLSL builtin shims. */
 const char *pgraph_msl_prologue(void);
 

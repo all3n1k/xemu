@@ -139,6 +139,11 @@ typedef struct PGRAPHMetalState {
     unsigned long            inline_draws;
     unsigned long            cmdbuf_errors;
     MTLVertexDescriptor      *pending_vd;
+
+    /* Diagnostics: XEMU_METAL_DEBUG_POS makes the vertex shader also write
+     * its computed clip position here, so the transform can be read back. */
+    id<MTLBuffer>            debug_pos_buffer;
+    unsigned int             debug_pos_count;
 } PGRAPHMetalState;
 
 #endif /* XEMU_NV2A_PGRAPH_METAL_RENDERER_H */

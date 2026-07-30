@@ -449,6 +449,18 @@ static id<MTLRenderPipelineState> get_debug_pipeline(PGRAPHMetalState *r)
 /* Pipeline state.                                                     */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Metal bakes the vertex descriptor into the pipeline state, so the descriptor
+ * is part of the pipeline's identity and has to be part of the cache key.
+ *
+ * Keying on the pgraph attribute registers instead looks equivalent but is
+ * not: the immediate-mode paths build a descriptor from the inline data
+ * layout, which has no relationship to those registers. An inline_array draw
+ * therefore hashed to whatever array-path pipeline last used the same
+ * attribute formats, and Metal fetched its vertices with that pipeline's
+ * strides -- reading zeroes. Hashing the descriptor itself makes the key
+ * correct by construction, whoever built it.
+ */
 typedef struct MetalPipelineKey {
     const void *shader_binding;
     MTLPixelFormat color_format;
@@ -458,9 +470,16 @@ typedef struct MetalPipelineKey {
     uint32_t control_0;
     uint16_t compressed_attrs;
     uint16_t swizzle_attrs;
-    uint32_t attr_format[NV2A_VERTEXSHADER_ATTRIBUTES];
-    uint32_t attr_stride[NV2A_VERTEXSHADER_ATTRIBUTES];
-    uint8_t  attr_count[NV2A_VERTEXSHADER_ATTRIBUTES];
+    struct {
+        uint32_t format;
+        uint32_t offset;
+        uint32_t buffer_index;
+    } attr[NV2A_VERTEXSHADER_ATTRIBUTES];
+    struct {
+        uint32_t stride;
+        uint32_t step_function;
+        uint32_t step_rate;
+    } layout[METAL_VERTEX_BUFFER_BASE + NV2A_VERTEXSHADER_ATTRIBUTES];
 } MetalPipelineKey;
 
 static id<MTLRenderPipelineState> get_pipeline(NV2AState *d,
@@ -483,9 +502,16 @@ static id<MTLRenderPipelineState> get_pipeline(NV2AState *d,
     key.compressed_attrs = pg->compressed_attrs;
     key.swizzle_attrs = pg->swizzle_attrs;
     for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
-        key.attr_format[i] = pg->vertex_attributes[i].format;
-        key.attr_stride[i] = pg->vertex_attributes[i].stride;
-        key.attr_count[i] = pg->vertex_attributes[i].count;
+        MTLVertexAttributeDescriptor *a = vd.attributes[i];
+        key.attr[i].format = (uint32_t)a.format;
+        key.attr[i].offset = (uint32_t)a.offset;
+        key.attr[i].buffer_index = (uint32_t)a.bufferIndex;
+    }
+    for (int i = 0; i < ARRAY_SIZE(key.layout); i++) {
+        MTLVertexBufferLayoutDescriptor *l = vd.layouts[i];
+        key.layout[i].stride = (uint32_t)l.stride;
+        key.layout[i].step_function = (uint32_t)l.stepFunction;
+        key.layout[i].step_rate = (uint32_t)l.stepRate;
     }
 
     GBytes *k = g_bytes_new(&key, sizeof(key));
@@ -962,24 +988,15 @@ void pgraph_metal_draw_begin(NV2AState *d)
     MTLVertexDescriptor *vd = pgraph_metal_build_vertex_descriptor(d);
     r->pending_vd = vd;
 
-    id<MTLRenderPipelineState> pso;
+    /*
+     * The pipeline is not created here. Which vertex descriptor is correct
+     * depends on how the guest submits vertices -- array, inline buffer or
+     * inline array -- and that is not settled until the BEGIN/END block
+     * closes, so flush_draw creates and sets it.
+     */
     bool debug_shader = getenv("XEMU_METAL_DEBUG_SHADER") != NULL;
 
-    bool debug_fs = getenv("XEMU_METAL_DEBUG_FS") != NULL;
-
-    if (debug_shader) {
-        pso = get_debug_pipeline(r);
-    } else if (debug_fs && r->color_binding) {
-        pso = get_hybrid_pipeline(r, sb, vd);
-    } else {
-        pso = get_pipeline(d, sb, vd);
-    }
-    if (pso == nil) {
-        return;
-    }
-
     r->encoder = begin_encoder(d);
-    [r->encoder setRenderPipelineState:pso];
     [r->encoder setDepthStencilState:get_depth_stencil_state(d)];
 
     if (!debug_shader) {
@@ -1024,6 +1041,48 @@ void pgraph_metal_draw_end(NV2AState *d)
          * so without this a rejected draw is indistinguishable from one that
          * rendered nothing.
          */
+        /*
+         * Raw inline_array input against the clip position the vertex shader
+         * actually produced. Everything up to the rasterizer has been
+         * measured; this is the one stage whose output was still inferred.
+         */
+        if (getenv("XEMU_METAL_DEBUG_POS") && r->debug_pos_buffer &&
+            pg->inline_array_length) {
+            static int shown;
+            if (shown++ < 12) {
+                unsigned int n = r->debug_pos_count;
+                if (n > 8) {
+                    n = 8;
+                }
+                const float *in = (const float *)pg->inline_array;
+                const float *out = (const float *)r->debug_pos_buffer.contents;
+
+                fprintf(stderr,
+                        "vtx-dump: target @%08lx prim=%d verts=%u ff=%d\n",
+                        r->color_binding
+                            ? (unsigned long)r->color_binding->vram_addr
+                            : 0UL,
+                        pg->primitive_mode, r->debug_pos_count,
+                        r->shader_binding
+                            ? r->shader_binding->state.vsh.is_fixed_function
+                            : -1);
+                for (unsigned int k = 0; k < n; k++) {
+                    fprintf(stderr,
+                            "   v%u  in(%8.2f %8.2f)  ->  clip(%9.3f %9.3f "
+                            "%9.3f %9.3f)",
+                            k, in[k * 4 + 0], in[k * 4 + 1], out[k * 4 + 0],
+                            out[k * 4 + 1], out[k * 4 + 2], out[k * 4 + 3]);
+                    float w = out[k * 4 + 3];
+                    if (w != 0.0f && isfinite(w)) {
+                        fprintf(stderr, "  ndc(%7.3f %7.3f %7.3f)",
+                                out[k * 4 + 0] / w, out[k * 4 + 1] / w,
+                                out[k * 4 + 2] / w);
+                    }
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
+
         if (getenv("XEMU_METAL_TRACE_SCANOUT") && r->color_binding &&
             r->color_binding->vram_addr == 0x032a4000 &&
             r->color_binding->texture.storageMode == MTLStorageModeShared) {
@@ -1038,6 +1097,27 @@ void pgraph_metal_draw_end(NV2AState *d)
             size_t nz = 0;
             for (size_t k = 0; k < n; k++) {
                 if (buf[k]) { nz++; }
+            }
+
+            /* A coverage count says pixels were written, not that they are
+             * the right pixels. Dump the raw target so the frame can be
+             * looked at. */
+            const char *dump = getenv("XEMU_METAL_DUMP_FRAME");
+            if (dump) {
+                static unsigned long frame, seq;
+                if ((frame++ % 25) == 3 && seq < 12) {
+                    char path[1024];
+                    snprintf(path, sizeof(path), "%s%03lu.raw", dump, seq++);
+                    FILE *f = fopen(path, "wb");
+                    if (f) {
+                        uint32_t hdr[2] = { tw, th };
+                        fwrite(hdr, sizeof(hdr), 1, f);
+                        fwrite(buf, 4, n, f);
+                        fclose(f);
+                        fprintf(stderr, "frame dumped: %ux%u -> %s\n", tw, th,
+                                path);
+                    }
+                }
             }
             g_free(buf);
             static unsigned long tn;
@@ -1163,6 +1243,20 @@ void pgraph_metal_flush_draw(NV2AState *d)
         return;
     }
     [r->encoder setRenderPipelineState:pso];
+
+    if (getenv("XEMU_METAL_DEBUG_POS")) {
+        const unsigned int max_verts = 4096;
+        if (r->debug_pos_buffer == nil) {
+            r->debug_pos_buffer =
+                [r->device newBufferWithLength:max_verts * 16
+                                       options:MTLResourceStorageModeShared];
+        }
+        memset(r->debug_pos_buffer.contents, 0xff, max_verts * 16);
+        r->debug_pos_count = inline_count;
+        [r->encoder setVertexBuffer:r->debug_pos_buffer
+                             offset:0
+                            atIndex:MSL_DEBUG_POS_BUFFER_INDEX];
+    }
 
     unsigned int mode = pg->primitive_mode;
     bool expand = primitive_needs_expansion(mode);

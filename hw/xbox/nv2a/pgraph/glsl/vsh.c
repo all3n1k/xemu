@@ -499,6 +499,9 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
         /* Metal clip space matches Vulkan/D3D: z in [0,1], no remap needed. */
         mstring_append(body, "  out.nv2a_position = oPos;\n");
         pgraph_msl_gen_vtx_out_pack(body);
+        if (opts.debug_pos) {
+            mstring_append(body, "  dbgPos[nv2a_vid] = oPos;\n");
+        }
         mstring_append(body, "  return out;\n");
     } else if (opts.vulkan) {
         mstring_append(body,
@@ -535,9 +538,18 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
         mstring_append_fmt(
             msl,
             "vertex VshOut main0(VshIn in [[stage_in]],\n"
-            "                    constant VshUniforms &U [[buffer(%d)]])\n"
-            "{\n",
+            "                    constant VshUniforms &U [[buffer(%d)]]",
             MSL_UNIFORM_BUFFER_INDEX);
+        if (opts.debug_pos) {
+            mstring_append_fmt(msl,
+                               ",\n"
+                               "                    device float4 *dbgPos "
+                               "[[buffer(%d)]],\n"
+                               "                    uint nv2a_vid "
+                               "[[vertex_id]]",
+                               MSL_DEBUG_POS_BUFFER_INDEX);
+        }
+        mstring_append(msl, ")\n{\n");
         mstring_append(msl, mstring_get_str(body));
 
         mstring_unref(attr_members);

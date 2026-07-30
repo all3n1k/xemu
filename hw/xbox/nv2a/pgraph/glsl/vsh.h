@@ -99,6 +99,10 @@ DECL_UNIFORM_TYPES(VshUniform, VSH_UNIFORM_DECL_X)
 typedef struct GenVshGlslOptions {
     bool vulkan;
     bool metal; /* emit Metal Shading Language instead of GLSL */
+    /* Metal only: also write the computed clip position to a debug buffer, so
+     * the transform can be inspected from the CPU. Off unless explicitly
+     * requested; it changes the function signature. */
+    bool debug_pos;
     bool prefix_outputs;
     bool use_push_constants_for_uniform_attrs;
     int ubo_binding;

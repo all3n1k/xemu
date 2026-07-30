@@ -29,6 +29,7 @@ MString *pgraph_metal_gen_vsh(const VshState *state)
 {
     GenVshGlslOptions opts = {
         .metal = true,
+        .debug_pos = getenv("XEMU_METAL_DEBUG_POS") != NULL,
         .ubo_binding = MSL_UNIFORM_BUFFER_INDEX,
     };
     return pgraph_glsl_gen_vsh(state, opts);
