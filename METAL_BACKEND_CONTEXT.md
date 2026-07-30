@@ -450,15 +450,25 @@ confidence first:
   3. The guest steering the texture off an occlusion query result.
      Queries were implemented (also real, also kept) and the count again
      did not move.
+  4. Surfaces never being aged out, so rendered content never reached
+     guest memory. GL's surface_evict_old() had no Metal counterpart at
+     all; it was ported (real gap, kept) and the count did not move.
 
-**Caveat on the comparison itself, unresolved:** the two backends' dumps
-are paired by `widthxheight_format` filename. Metal's guest address is
-logged (0x01c54000); GL's log prints a host pointer, which differs
-between runs, so it was never confirmed that both backends dumped the
-*same* texture rather than two different 1024x1024 fmt-0x6 textures.
-Confirming this is the first thing to do -- it could invalidate the
-602007 figure entirely. `upload_gl_texture()` does not have `NV2AState`
-in scope; the offset is available in the caller around gl/texture.c:343.
+Four interventions, four times the differing byte count did not change
+by one. That constancy is itself evidence: whatever writes 0x01c54000 is
+not on any of these paths.
+
+**The comparison itself is validated.** Both backends log a guest offset
+now and both read this texture from 0x01c54000, so the 602007 figure is
+a real like-for-like difference, not two different textures paired by a
+coincidence of filename.
+
+**The texture is not stale, either.** `XEMU_METAL_TRACE_TEXCACHE` shows
+the cache key hashes the full 4194304 bytes and returns the *same* hash
+on every bind across a whole boot. Guest memory at 0x01c54000 never
+changes during a Metal run, so this is not a missed cache invalidation
+or a snapshot taken too early. The guest wrote it once, and it wrote
+something different than it writes under GL.
 
 Next after that: diff the draw sequence between backends -- which draws
 happen, in what order, into which surface. That has never been run and

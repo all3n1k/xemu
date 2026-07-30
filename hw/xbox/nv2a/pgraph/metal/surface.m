@@ -899,6 +899,31 @@ static bool framebuffer_dirty(PGRAPHState *pg)
     return true;
 }
 
+/*
+ * Age surfaces out, writing back anything still holding rendered content.
+ *
+ * The GL backend does this at the end of every surface_update and the Metal
+ * backend did not do it at all. Without it a surface lives forever, and --
+ * more importantly than the leak -- content rendered into it never reaches
+ * guest memory, so a guest that later reads that memory as texture data sees
+ * whatever was there before the draws.
+ */
+static void surface_evict_old(NV2AState *d)
+{
+    PGRAPHMetalState *r = d->pgraph.metal_renderer_state;
+
+    const int surface_age_limit = 5;
+
+    MetalSurfaceBinding *s, *next;
+    QTAILQ_FOREACH_SAFE (s, &r->surfaces, entry, next) {
+        int last_used = d->pgraph.frame_time - s->frame_time;
+        if (last_used >= surface_age_limit) {
+            pgraph_metal_surface_download_if_dirty(d, s);
+            pgraph_metal_surface_invalidate(d, s);
+        }
+    }
+}
+
 void pgraph_metal_surface_update(NV2AState *d, bool upload, bool color_write,
                                  bool zeta_write)
 {
@@ -947,6 +972,8 @@ void pgraph_metal_surface_update(NV2AState *d, bool upload, bool color_write,
             update_surface_part(d, false, false);
         }
     }
+
+    surface_evict_old(d);
 }
 
 void pgraph_metal_set_surface_dirty(PGRAPHState *pg, bool color, bool zeta)

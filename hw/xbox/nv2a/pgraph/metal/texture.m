@@ -320,6 +320,20 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
                               MIN(pgraph_get_texture_length(pg, (TextureShape *)s),
                                   (size_t)height * width * f.bytes_per_pixel));
 
+    if (getenv("XEMU_METAL_TRACE_TEXCACHE") && width >= 1024) {
+        static int n;
+        if (n++ < 6) {
+            fprintf(stderr,
+                    "texcache: @%08lx %ux%u tex_len=%zu hashed=%zu hash=%llx\n",
+                    (unsigned long)texture_addr, width, height,
+                    pgraph_get_texture_length(pg, (TextureShape *)s),
+                    (size_t)MIN(pgraph_get_texture_length(pg,
+                                                          (TextureShape *)s),
+                                (size_t)height * width * f.bytes_per_pixel),
+                    (unsigned long long)key.data_hash);
+        }
+    }
+
     GBytes *k = g_bytes_new(&key, sizeof(key));
     id<MTLTexture> cached =
         (__bridge id<MTLTexture>)g_hash_table_lookup(r->texture_cache, k);

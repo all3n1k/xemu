@@ -28,6 +28,11 @@
 #include "renderer.h"
 
 static TextureBinding* generate_texture(const TextureShape s, const uint8_t *texture_data, const uint8_t *palette_data);
+
+/* Guest offset of the texture currently being uploaded. Diagnostic only:
+ * upload_gl_texture() has no NV2AState, and comparing dumps against another
+ * backend needs a guest address, not a host pointer that moves per run. */
+static unsigned long gl_dump_tex_guest_offset;
 static void texture_binding_destroy(gpointer data);
 
 struct pgraph_texture_possibly_dirty_struct {
@@ -362,6 +367,7 @@ void pgraph_gl_bind_textures(NV2AState *d)
 
         if (key_out->binding == NULL) {
             // Must create the texture
+            gl_dump_tex_guest_offset = (unsigned long)texture_vram_offset;
             key_out->binding = generate_texture(state, texture_data, palette_data);
             key_out->binding->data_hash = tex_data_hash;
             key_out->binding->scale = 1;
@@ -559,9 +565,9 @@ static void upload_gl_texture(GLenum gl_target,
                         }
                         fprintf(stderr,
                                 "GL tex dumped: %ux%u fmt=0x%x pitch=%u "
-                                "src=%p -> %s\n",
+                                "addr=%08lx -> %s\n",
                                 width, height, s.color_format, dp,
-                                texture_data, tpath);
+                                gl_dump_tex_guest_offset, tpath);
                     }
                 }
 
