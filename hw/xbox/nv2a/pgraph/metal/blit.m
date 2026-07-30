@@ -78,10 +78,57 @@ void pgraph_metal_image_blit(NV2AState *d)
     dest += context_surfaces->dest_offset;
     hwaddr dest_addr = dest - d->vram_ptr;
 
+    if (getenv("XEMU_BLIT_TRACE")) {
+        fprintf(stderr, "B src=%08lx dst=%08lx %ux%u bpp=%u\n",
+                (unsigned long)source_addr, (unsigned long)dest_addr,
+                image_blit->width, image_blit->height, bytes_per_pixel);
+    }
+
     /* The source may still live only in a GPU texture. */
     MetalSurfaceBinding *surf_src = pgraph_metal_surface_get(d, source_addr);
+    if (getenv("XEMU_BLIT_TRACE") && surf_src) {
+        fprintf(stderr, "MT blit-src @%08lx %ux%u swizzle=%d draw_dirty=%d\n",
+                (unsigned long)source_addr, surf_src->width, surf_src->height,
+                surf_src->swizzle, surf_src->draw_dirty);
+    }
     if (surf_src) {
         pgraph_metal_surface_download_if_dirty(d, surf_src);
+    }
+
+    /*
+     * The blit source is where the guest actually built the image; dumping
+     * the GPU texture here separates "rendered wrong" from "copied wrong".
+     */
+    const char *bd = getenv("XEMU_BLIT_DUMP");
+    if (bd && surf_src && surf_src->texture != nil &&
+        surf_src->texture.storageMode == MTLStorageModeShared) {
+        static int bn;
+        if (bn < 4) {
+            unsigned tw = (unsigned)surf_src->texture.width;
+            unsigned th = (unsigned)surf_src->texture.height;
+            size_t n = (size_t)tw * th;
+            uint32_t *buf = g_malloc(n * 4);
+            [surf_src->texture getBytes:buf
+                            bytesPerRow:tw * 4
+                             fromRegion:MTLRegionMake2D(0, 0, tw, th)
+                            mipmapLevel:0];
+            char path[1024];
+            snprintf(path, sizeof(path), "%s_src%08lx_%d.raw", bd,
+                     (unsigned long)source_addr, bn++);
+            FILE *fp = fopen(path, "wb");
+            if (fp) {
+                uint32_t hdr[2] = { tw, th };
+                fwrite(hdr, sizeof(hdr), 1, fp);
+                fwrite(buf, 4, n, fp);
+                fclose(fp);
+                fprintf(stderr,
+                        "blit-src dumped: @%08lx tex %ux%u swizzle=%d "
+                        "draw_dirty=%d -> %s\n",
+                        (unsigned long)source_addr, tw, th,
+                        surf_src->swizzle, surf_src->draw_dirty, path);
+            }
+            g_free(buf);
+        }
     }
 
     hwaddr source_offset = image_blit->in_y * context_surfaces->source_pitch +

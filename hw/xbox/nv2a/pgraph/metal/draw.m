@@ -1256,6 +1256,20 @@ void pgraph_metal_draw_end(NV2AState *d)
 
     }
 
+    if (getenv("XEMU_DRAW_TRACE")) {
+        static unsigned long dn;
+        if (dn < 4000) {
+            fprintf(stderr, "D%lu %08lx p%d e%u a%u ia%u ib%u t%08lx\n", dn,
+                    r->color_binding
+                        ? (unsigned long)r->color_binding->vram_addr : 0UL,
+                    pg->primitive_mode, pg->inline_elements_length,
+                    pg->draw_arrays_length, pg->inline_array_length,
+                    pg->inline_buffer_length,
+                    (unsigned long)pgraph_get_texture_phys_addr(pg, 0));
+        }
+        dn++;
+    }
+
     pg->draw_time++;
     if (r->color_binding && pgraph_color_write_enabled(pg)) {
         r->color_binding->draw_time = pg->draw_time;

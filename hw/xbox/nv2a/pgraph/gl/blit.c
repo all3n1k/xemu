@@ -115,7 +115,18 @@ void pgraph_gl_image_blit(NV2AState *d)
     dest += context_surfaces->dest_offset;
     hwaddr dest_addr = dest - d->vram_ptr;
 
+    if (getenv("XEMU_BLIT_TRACE")) {
+        fprintf(stderr, "B src=%08lx dst=%08lx %ux%u bpp=%u\n",
+                (unsigned long)source_addr, (unsigned long)dest_addr,
+                image_blit->width, image_blit->height, bytes_per_pixel);
+    }
+
     SurfaceBinding *surf_src = pgraph_gl_surface_get(d, source_addr);
+    if (getenv("XEMU_BLIT_TRACE") && surf_src) {
+        fprintf(stderr, "GL blit-src @%08lx %ux%u swizzle=%d draw_dirty=%d\n",
+                (unsigned long)source_addr, surf_src->width, surf_src->height,
+                surf_src->swizzle, surf_src->draw_dirty);
+    }
     if (surf_src) {
         pgraph_gl_surface_download_if_dirty(d, surf_src);
     }

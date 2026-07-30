@@ -239,6 +239,14 @@ static MetalSurfaceBinding *surface_put(NV2AState *d, hwaddr addr,
 
     register_cpu_access_callback(d, surface_out);
 
+    if (getenv("XEMU_SURF_TRACE")) {
+        fprintf(stderr, "S %08lx %ux%u %s %s\n",
+                (unsigned long)surface_out->vram_addr,
+                surface_out->width, surface_out->height,
+                surface_out->color ? "c" : "z",
+                surface_out->swizzle ? "sz" : "ln");
+    }
+
     QTAILQ_INSERT_TAIL(&r->surfaces, surface_out, entry);
 
     return surface_out;
@@ -961,6 +969,33 @@ void pgraph_metal_surface_update(NV2AState *d, bool upload, bool color_write,
 
         if (zeta_write) {
             update_surface_part(d, true, false);
+        }
+
+        /*
+         * Re-stamp the bound surfaces' swizzle flag.
+         *
+         * The guest changes NV097_SET_SURFACE_FORMAT_TYPE between linear and
+         * swizzled while keeping the same binding alive, and the flag decides
+         * the memory layout the surface is written back in. Setting it only at
+         * creation, as this backend did, leaves a surface that was created
+         * linear being downloaded linear after the guest switched it to
+         * swizzled -- and anything that then reads that memory as a swizzled
+         * texture unswizzles linear bytes into a tiled scramble.
+         *
+         * Measured on the BIOS logo: the guest renders it into the surface at
+         * 0x02454000, blits that to 0x01c54000 and samples it as a swizzled
+         * texture. GL reported the surface swizzled at blit time, Metal
+         * reported it linear, and the texture came out differing by 602007 of
+         * 4194312 bytes. Mirrors pgraph_gl_surface_update().
+         */
+        bool surface_swizzle =
+            (pg->surface_type == NV097_SET_SURFACE_FORMAT_TYPE_SWIZZLE);
+        PGRAPHMetalState *rs = pg->metal_renderer_state;
+        if (rs->color_binding) {
+            rs->color_binding->swizzle = surface_swizzle;
+        }
+        if (rs->zeta_binding) {
+            rs->zeta_binding->swizzle = surface_swizzle;
         }
     } else {
         if ((color_write || pg->surface_color.write_enabled_cache) &&

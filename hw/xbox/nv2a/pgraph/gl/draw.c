@@ -332,6 +332,22 @@ void pgraph_gl_draw_begin(NV2AState *d)
 
 void pgraph_gl_draw_end(NV2AState *d)
 {
+    if (getenv("XEMU_DRAW_TRACE")) {
+        PGRAPHState *pg_t = &d->pgraph;
+        PGRAPHGLState *r_t = pg_t->gl_renderer_state;
+        static unsigned long dn;
+        if (dn < 4000) {
+            fprintf(stderr, "D%lu %08lx p%d e%u a%u ia%u ib%u t%08lx\n", dn,
+                    r_t->color_binding
+                        ? (unsigned long)r_t->color_binding->vram_addr : 0UL,
+                    pg_t->primitive_mode, pg_t->inline_elements_length,
+                    pg_t->draw_arrays_length, pg_t->inline_array_length,
+                    pg_t->inline_buffer_length,
+                    (unsigned long)pgraph_get_texture_phys_addr(pg_t, 0));
+        }
+        dn++;
+    }
+
     PGRAPHState *pg = &d->pgraph;
     PGRAPHGLState *r = pg->gl_renderer_state;
 

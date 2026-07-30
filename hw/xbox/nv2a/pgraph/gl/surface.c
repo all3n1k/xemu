@@ -527,6 +527,13 @@ static SurfaceBinding *surface_put(NV2AState *d, hwaddr addr,
 
     register_cpu_access_callback(d, surface_out);
 
+    if (getenv("XEMU_SURF_TRACE")) {
+        fprintf(stderr, "S %08lx %ux%u %s %s\n",
+                (unsigned long)surface_out->vram_addr, surface_out->width,
+                surface_out->height, surface_out->color ? "c" : "z",
+                surface_out->swizzle ? "sz" : "ln");
+    }
+
     QTAILQ_INSERT_TAIL(&r->surfaces, surface_out, entry);
 
     return surface_out;
