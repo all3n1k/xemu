@@ -32,7 +32,39 @@ MString *pgraph_metal_gen_vsh(const VshState *state)
         .debug_pos = getenv("XEMU_METAL_DEBUG_POS") != NULL,
         .ubo_binding = MSL_UNIFORM_BUFFER_INDEX,
     };
-    return pgraph_glsl_gen_vsh(state, opts);
+    MString *msl = pgraph_glsl_gen_vsh(state, opts);
+
+    /*
+     * Both dialects come from one generator, so emitting the GLSL for the
+     * same state alongside the MSL makes a translation bug a plain textual
+     * diff rather than something to infer from pixels.
+     */
+    const char *dump = getenv("XEMU_METAL_DUMP_VSH");
+    if (dump) {
+        static int n;
+        bool want = !getenv("XEMU_METAL_DUMP_VSH_FF") ||
+                    state->is_fixed_function;
+        if (want && n < 2) {
+            GenVshGlslOptions g = { .vulkan = false, .ubo_binding = 0 };
+            MString *glsl = pgraph_glsl_gen_vsh(state, g);
+            char path[1024];
+            snprintf(path, sizeof(path), "%s%d_ff%d.msl", dump, n,
+                     state->is_fixed_function);
+            FILE *f = fopen(path, "w");
+            if (f) { fputs(mstring_get_str(msl), f); fclose(f); }
+            snprintf(path, sizeof(path), "%s%d_ff%d.glsl", dump, n,
+                     state->is_fixed_function);
+            f = fopen(path, "w");
+            if (f) { fputs(mstring_get_str(glsl), f); fclose(f); }
+            mstring_unref(glsl);
+            fprintf(stderr, "vsh dumped: ff=%d -> %s%d_ff%d.{msl,glsl}\n",
+                    state->is_fixed_function, dump, n,
+                    state->is_fixed_function);
+            n++;
+        }
+    }
+
+    return msl;
 }
 
 MString *pgraph_metal_gen_psh(const PshState *state)
