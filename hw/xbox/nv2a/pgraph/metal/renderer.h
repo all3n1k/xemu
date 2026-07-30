@@ -140,6 +140,17 @@ typedef struct PGRAPHMetalState {
     /* Current draw. */
     id<MTLCommandBuffer>          command_buffer;
     id<MTLRenderCommandEncoder>   encoder;
+    /*
+     * Attachments the open encoder was created against. A render pass is
+     * expensive on a tile GPU -- it loads and stores the whole target -- so
+     * consecutive draws share one encoder and it is only restarted when the
+     * attachments actually change.
+     */
+    id<MTLTexture>                encoder_color;
+    id<MTLTexture>                encoder_depth;
+    unsigned long                 encoder_draws;
+    unsigned long                 passes;
+    unsigned long                 submits;
     unsigned long            draws_issued;
     unsigned long            expanded_prims;
     unsigned long            unsupported_prims;

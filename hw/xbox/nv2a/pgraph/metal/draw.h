@@ -31,6 +31,17 @@ void pgraph_metal_draw_begin(NV2AState *d);
 void pgraph_metal_draw_end(NV2AState *d);
 void pgraph_metal_flush_draw(NV2AState *d);
 
+/*
+ * Close the open render pass, if any, and submit the command buffer.
+ *
+ * Draws accumulate into one encoder for as long as they keep targeting the
+ * same attachments, so anything that needs earlier work to have actually
+ * happened -- reading a surface back, destroying its texture, handing it to
+ * the UI -- has to call this first. `wait` blocks until the GPU is done,
+ * which only a CPU-side read of the result requires.
+ */
+void pgraph_metal_flush_gpu(NV2AState *d, bool wait);
+
 void pgraph_metal_report_shader_stats(PGRAPHState *pg);
 
 #endif /* XEMU_NV2A_PGRAPH_METAL_DRAW_H */

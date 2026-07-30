@@ -783,10 +783,128 @@ static id<MTLTexture> get_scratch_depth(PGRAPHMetalState *r,
     return r->scratch_depth;
 }
 
+void pgraph_metal_flush_gpu(NV2AState *d, bool wait)
+{
+    PGRAPHMetalState *r = d->pgraph.metal_renderer_state;
+
+    if (r->encoder != nil) {
+        [r->encoder endEncoding];
+        r->encoder = nil;
+        r->encoder_color = nil;
+        r->encoder_depth = nil;
+    }
+
+    if (r->command_buffer == nil) {
+        return;
+    }
+
+    [r->command_buffer commit];
+    r->submits++;
+
+    if (wait) {
+        [r->command_buffer waitUntilCompleted];
+
+        /*
+         * A command buffer that errors out still completes as far as the CPU
+         * is concerned, so without this a rejected pass is indistinguishable
+         * from one that drew nothing.
+         */
+        if (r->command_buffer.status != MTLCommandBufferStatusCompleted) {
+            r->cmdbuf_errors++;
+            if (r->cmdbuf_errors < 5) {
+                NSError *e = r->command_buffer.error;
+                fprintf(stderr,
+                        "nv2a: metal: command buffer status=%ld error=%s\n",
+                        (long)r->command_buffer.status,
+                        e ? [[e localizedDescription] UTF8String] : "(none)");
+            }
+        }
+    }
+
+    r->command_buffer = nil;
+}
+
+/*
+ * Per-draw encoder state. Separate from starting a pass because these change
+ * between draws that share one, and setting them is cheap where a new render
+ * pass is not.
+ */
+static void apply_dynamic_state(NV2AState *d, id<MTLRenderCommandEncoder> enc)
+{
+    PGRAPHState *pg = &d->pgraph;
+
+    unsigned int vp_w = pg->surface_binding_dim.width;
+    unsigned int vp_h = pg->surface_binding_dim.height;
+    pgraph_apply_scaling_factor(pg, &vp_w, &vp_h);
+    [enc setViewport:(MTLViewport){ 0.0, 0.0, (double)vp_w, (double)vp_h,
+                                    0.0, 1.0 }];
+
+    unsigned int xmin = pg->surface_shape.clip_x;
+    unsigned int ymin = pg->surface_shape.clip_y;
+    unsigned int sw = pg->surface_shape.clip_width;
+    unsigned int sh = pg->surface_shape.clip_height;
+    pgraph_apply_anti_aliasing_factor(pg, &xmin, &ymin);
+    pgraph_apply_anti_aliasing_factor(pg, &sw, &sh);
+    pgraph_apply_scaling_factor(pg, &xmin, &ymin);
+    pgraph_apply_scaling_factor(pg, &sw, &sh);
+
+    /* Metal validates that the scissor lies inside the attachment. */
+    sw = MIN(sw, vp_w > xmin ? vp_w - xmin : 0);
+    sh = MIN(sh, vp_h > ymin ? vp_h - ymin : 0);
+    if (getenv("XEMU_METAL_FULL_SCISSOR")) {
+        [enc setScissorRect:(MTLScissorRect){ 0, 0, vp_w, vp_h }];
+    } else if (sw && sh) {
+        [enc setScissorRect:(MTLScissorRect){ xmin, ymin, sw, sh }];
+    }
+
+    /* Winding is reversed because clip-space y is inverted, matching GL. */
+    [enc setFrontFacingWinding:(pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
+                                NV_PGRAPH_SETUPRASTER_FRONTFACE)
+                                   ? MTLWindingClockwise
+                                   : MTLWindingCounterClockwise];
+
+    if (pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
+        NV_PGRAPH_SETUPRASTER_CULLENABLE) {
+        uint32_t cull = GET_MASK(pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER),
+                                 NV_PGRAPH_SETUPRASTER_CULLCTRL);
+        MTLCullMode m = MTLCullModeNone;
+        switch (cull) {
+        case NV_PGRAPH_SETUPRASTER_CULLCTRL_FRONT: m = MTLCullModeFront; break;
+        case NV_PGRAPH_SETUPRASTER_CULLCTRL_BACK:  m = MTLCullModeBack; break;
+        default: break;
+        }
+        [enc setCullMode:getenv("XEMU_METAL_NO_CULL") ? MTLCullModeNone : m];
+    } else {
+        [enc setCullMode:MTLCullModeNone];
+    }
+}
+
 static id<MTLRenderCommandEncoder> begin_encoder(NV2AState *d)
 {
     PGRAPHState *pg = &d->pgraph;
     PGRAPHMetalState *r = pg->metal_renderer_state;
+
+    id<MTLTexture> want_color =
+        r->color_binding ? r->color_binding->texture : nil;
+    id<MTLTexture> want_depth =
+        r->zeta_binding ? r->zeta_binding->texture : nil;
+
+    /*
+     * Reuse the open pass when it already targets these attachments. Ending
+     * and restarting a render pass per draw costs a full store and reload of
+     * the render target on a tile GPU, which at a few thousand draws a frame
+     * dominates everything else.
+     */
+    if (r->encoder != nil && r->encoder_color == want_color &&
+        r->encoder_depth == want_depth) {
+        apply_dynamic_state(d, r->encoder);
+        return r->encoder;
+    }
+
+    if (r->encoder != nil) {
+        [r->encoder endEncoding];
+        r->encoder = nil;
+    }
 
     MTLRenderPassDescriptor *rp =
         [MTLRenderPassDescriptor renderPassDescriptor];
@@ -814,33 +932,16 @@ static id<MTLRenderCommandEncoder> begin_encoder(NV2AState *d)
         rp.depthAttachment.storeAction = MTLStoreActionDontCare;
     }
 
-    r->command_buffer = [r->queue commandBuffer];
+    if (r->command_buffer == nil) {
+        r->command_buffer = [r->queue commandBuffer];
+    }
     id<MTLRenderCommandEncoder> enc =
         [r->command_buffer renderCommandEncoderWithDescriptor:rp];
+    r->encoder_color = want_color;
+    r->encoder_depth = want_depth;
+    r->passes++;
 
-    unsigned int vp_w = pg->surface_binding_dim.width;
-    unsigned int vp_h = pg->surface_binding_dim.height;
-    pgraph_apply_scaling_factor(pg, &vp_w, &vp_h);
-    [enc setViewport:(MTLViewport){ 0.0, 0.0, (double)vp_w, (double)vp_h,
-                                    0.0, 1.0 }];
-
-    unsigned int xmin = pg->surface_shape.clip_x;
-    unsigned int ymin = pg->surface_shape.clip_y;
-    unsigned int sw = pg->surface_shape.clip_width;
-    unsigned int sh = pg->surface_shape.clip_height;
-    pgraph_apply_anti_aliasing_factor(pg, &xmin, &ymin);
-    pgraph_apply_anti_aliasing_factor(pg, &sw, &sh);
-    pgraph_apply_scaling_factor(pg, &xmin, &ymin);
-    pgraph_apply_scaling_factor(pg, &sw, &sh);
-
-    /* Metal validates that the scissor lies inside the attachment. */
-    sw = MIN(sw, vp_w > xmin ? vp_w - xmin : 0);
-    sh = MIN(sh, vp_h > ymin ? vp_h - ymin : 0);
-    if (getenv("XEMU_METAL_FULL_SCISSOR")) {
-        [enc setScissorRect:(MTLScissorRect){ 0, 0, vp_w, vp_h }];
-    } else if (sw && sh) {
-        [enc setScissorRect:(MTLScissorRect){ xmin, ymin, sw, sh }];
-    }
+    apply_dynamic_state(d, enc);
 
     if (getenv("XEMU_METAL_TARGET_COUNTS") && r->color_binding) {
         /* Totals per target. An earlier version sampled and I read the
@@ -873,91 +974,6 @@ static id<MTLRenderCommandEncoder> begin_encoder(NV2AState *d)
         }
     }
 
-    if (getenv("XEMU_METAL_SURFACE_DUMP") && r->color_binding) {
-        /* One full dump per distinct surface address, all fields, so the two
-         * targets can be compared directly rather than reasoned about. */
-        static hwaddr seen[16];
-        static int nseen;
-        MetalSurfaceBinding *b = r->color_binding;
-        bool known = false;
-        for (int i = 0; i < nseen; i++) {
-            if (seen[i] == b->vram_addr) {
-                known = true;
-            }
-        }
-        if (!known && nseen < 16) {
-            seen[nseen++] = b->vram_addr;
-            fprintf(stderr,
-                "SURF @%08lx\n"
-                "  binding : %ux%u pitch=%u size=%zu swizzle=%d color=%d\n"
-                "  fmt     : host_bpp=%u guest_bpp=%u mtlfmt=%lu depth=%d stencil=%d\n"
-                "  texture : %lux%lu mtlfmt=%lu storage=%lu usage=%lu\n"
-                "  shape   : clip=%u,%u %ux%u log=%ux%u aa=%u cfmt=%u zfmt=%u\n"
-                "  state   : cleared=%d draw_dirty=%d up_pend=%d dn_pend=%d\n"
-                "  binddim : %ux%u clip=%u,%u %ux%u\n"
-                "  viewport: %ux%u scissor=%u,%u %ux%u  scale=%u\n",
-                (unsigned long)b->vram_addr,
-                b->width, b->height, b->pitch, b->size, b->swizzle, b->color,
-                b->fmt.host_bytes_per_pixel, b->fmt.guest_bytes_per_pixel,
-                (unsigned long)b->fmt.pixel_format, b->fmt.depth,
-                b->fmt.stencil,
-                (unsigned long)b->texture.width,
-                (unsigned long)b->texture.height,
-                (unsigned long)b->texture.pixelFormat,
-                (unsigned long)b->texture.storageMode,
-                (unsigned long)b->texture.usage,
-                b->shape.clip_x, b->shape.clip_y, b->shape.clip_width,
-                b->shape.clip_height, 1u << b->shape.log_width,
-                1u << b->shape.log_height, b->shape.anti_aliasing,
-                b->shape.color_format, b->shape.zeta_format,
-                b->cleared, b->draw_dirty, b->upload_pending,
-                b->download_pending,
-                pg->surface_binding_dim.width, pg->surface_binding_dim.height,
-                pg->surface_binding_dim.clip_x, pg->surface_binding_dim.clip_y,
-                pg->surface_binding_dim.clip_width,
-                pg->surface_binding_dim.clip_height,
-                vp_w, vp_h, xmin, ymin, sw, sh, pg->surface_scale_factor);
-        }
-    }
-
-    if (getenv("XEMU_METAL_VIEWPORT_STATS") && r->color_binding) {
-        static unsigned long vn;
-        if ((vn++ % 2000) == 0) {
-            fprintf(stderr,
-                    "viewport: target @%08lx tex=%lux%lu | vp=%ux%u "
-                    "scissor=%u,%u %ux%u | binding_dim=%ux%u clip=%u,%u %ux%u\n",
-                    (unsigned long)r->color_binding->vram_addr,
-                    (unsigned long)r->color_binding->texture.width,
-                    (unsigned long)r->color_binding->texture.height,
-                    vp_w, vp_h, xmin, ymin, sw, sh,
-                    pg->surface_binding_dim.width,
-                    pg->surface_binding_dim.height,
-                    pg->surface_shape.clip_x, pg->surface_shape.clip_y,
-                    pg->surface_shape.clip_width,
-                    pg->surface_shape.clip_height);
-        }
-    }
-
-    /* Winding is reversed because clip-space y is inverted, matching GL. */
-    [enc setFrontFacingWinding:(pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
-                                NV_PGRAPH_SETUPRASTER_FRONTFACE)
-                                   ? MTLWindingClockwise
-                                   : MTLWindingCounterClockwise];
-
-    if (pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
-        NV_PGRAPH_SETUPRASTER_CULLENABLE) {
-        uint32_t cull = GET_MASK(pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER),
-                                 NV_PGRAPH_SETUPRASTER_CULLCTRL);
-        MTLCullMode m = MTLCullModeNone;
-        switch (cull) {
-        case NV_PGRAPH_SETUPRASTER_CULLCTRL_FRONT: m = MTLCullModeFront; break;
-        case NV_PGRAPH_SETUPRASTER_CULLCTRL_BACK:  m = MTLCullModeBack; break;
-        default: break;
-        }
-        [enc setCullMode:getenv("XEMU_METAL_NO_CULL") ? MTLCullModeNone : m];
-    } else {
-        [enc setCullMode:MTLCullModeNone];
-    }
 
     return enc;
 }
@@ -1041,47 +1057,73 @@ void pgraph_metal_draw_end(NV2AState *d)
     pgraph_metal_flush_draw(d);
 
     if (r->encoder != nil) {
-        [r->encoder endEncoding];
-        r->encoder = nil;
-        [r->command_buffer commit];
-        /* Synchronous for now: the readback path reads the target straight
-         * after, and there is no fencing yet. */
-        [r->command_buffer waitUntilCompleted];
+        r->encoder_draws++;
 
         /*
-         * Check that the GPU actually accepted the work. A command buffer
-         * that errors out completes normally from the CPU's point of view,
-         * so without this a rejected draw is indistinguishable from one that
-         * rendered nothing.
+         * The pass stays open. It is closed and submitted when the
+         * attachments change or when something needs the result -- see
+         * pgraph_metal_flush_gpu. The diagnostics below do need the result,
+         * so they force a flush of their own.
          */
+        bool debug_readback = getenv("XEMU_METAL_DEBUG_POS") ||
+                              getenv("XEMU_METAL_TRACE_SCANOUT") ||
+                              getenv("XEMU_METAL_SYNC_EVERY_DRAW");
+        if (debug_readback) {
+            pgraph_metal_flush_gpu(d, true);
+        }
+
         /*
-         * Raw inline_array input against the clip position the vertex shader
-         * actually produced. Everything up to the rasterizer has been
-         * measured; this is the one stage whose output was still inferred.
+         * Raw input against the clip position the vertex shader actually
+         * produced. Everything up to the rasterizer has been measured; this
+         * is the one stage whose output was otherwise only inferred.
          */
         if (getenv("XEMU_METAL_DEBUG_POS") && r->debug_pos_buffer) {
             static int shown;
             if (shown++ < 14) {
                 unsigned int n = r->debug_pos_count;
-                if (n > 4) {
-                    n = 4;
+                if (n > 12) {
+                    n = 12;
                 }
                 const float *out = (const float *)r->debug_pos_buffer.contents;
 
                 fprintf(stderr,
-                        "  attr0: fmt=0x%x size=%u count=%u stride=%u "
-                        "const=%d | attr9: count=%u stride=%u const=%d | "
-                        "elems=%u arrays=%u inl_arr=%u inl_buf=%u\n",
-                        pg->vertex_attributes[0].format,
-                        pg->vertex_attributes[0].size,
-                        pg->vertex_attributes[0].count,
-                        pg->vertex_attributes[0].stride,
-                        r->attr_is_constant[0],
-                        pg->vertex_attributes[9].count,
-                        pg->vertex_attributes[9].stride,
-                        r->attr_is_constant[9],
+                        "  paths: elems=%u arrays=%u inl_arr=%u inl_buf=%u\n",
                         pg->inline_elements_length, pg->draw_arrays_length,
                         pg->inline_array_length, pg->inline_buffer_length);
+                for (int a = 0; a < NV2A_VERTEXSHADER_ATTRIBUTES; a++) {
+                    VertexAttribute *va = &pg->vertex_attributes[a];
+                    if (!va->count && r->attr_is_constant[a] &&
+                        !va->stride) {
+                        continue;
+                    }
+                    fprintf(stderr,
+                            "  attr%-2d fmt=0x%x size=%u count=%u stride=%u "
+                            "off=%u dma=%d const=%d base=%#lx",
+                            a, va->format, va->size, va->count, va->stride,
+                            va->offset, va->dma_select, r->attr_is_constant[a],
+                            (unsigned long)r->attr_buffer_offset[a]);
+                    /* What the CPU sees at the address the GPU was pointed
+                     * at. If this disagrees with what the shader fetched,
+                     * the binding is wrong; if it agrees, the data is. */
+                    if (!r->attr_is_constant[a] &&
+                        r->attr_buffer_offset[a] + 32 <
+                            memory_region_size(d->vram)) {
+                        const float *m =
+                            (const float *)(d->vram_ptr +
+                                            r->attr_buffer_offset[a]);
+                        fprintf(stderr, " mem[%.3f %.3f %.3f | %.3f %.3f %.3f]",
+                                m[0], m[1], m[2], m[3], m[4], m[5]);
+                    }
+                    fprintf(stderr, "\n");
+                }
+                if (pg->inline_elements_length) {
+                    fprintf(stderr, "  idx:");
+                    for (unsigned e = 0;
+                         e < MIN(8u, pg->inline_elements_length); e++) {
+                        fprintf(stderr, " %u", pg->inline_elements[e]);
+                    }
+                    fprintf(stderr, "\n");
+                }
                 fprintf(stderr,
                         "vtx-dump: target @%08lx prim=%d verts=%u ff=%d "
                         "rect0=%d texScale0=%.2f\n",
@@ -1107,6 +1149,52 @@ void pgraph_metal_draw_end(NV2AState *d)
                             " oT0(%8.3f %8.3f)\n",
                             k, a0[0], a0[1], a0[2], a0[3], a9[0], a9[1],
                             p[0], p[1], p[2], p[3], t[0], t[1]);
+                }
+            }
+        }
+
+        /*
+         * Every live colour surface, not just the scanout one. The scanout is
+         * the end of a chain -- the frame is built in offscreen targets and
+         * composited in -- so dumping only the last link cannot say which
+         * link introduced a fault.
+         */
+        const char *sdump = getenv("XEMU_METAL_DUMP_SURFACES");
+        if (sdump) {
+            static unsigned long tick;
+            static unsigned round;
+            unsigned long t = tick++;
+            if (t == 2000 || t == 8000 || t == 20000) {
+                round++;
+                /* Read back what the batched passes actually produced. */
+                pgraph_metal_flush_gpu(d, true);
+                MetalSurfaceBinding *s;
+                QTAILQ_FOREACH (s, &r->surfaces, entry) {
+                    if (!s->color || s->texture == nil ||
+                        s->texture.storageMode != MTLStorageModeShared) {
+                        continue;
+                    }
+                    unsigned tw = (unsigned)s->texture.width;
+                    unsigned th = (unsigned)s->texture.height;
+                    size_t sn = (size_t)tw * th;
+                    uint32_t *sb = g_malloc(sn * 4);
+                    [s->texture getBytes:sb
+                             bytesPerRow:tw * 4
+                              fromRegion:MTLRegionMake2D(0, 0, tw, th)
+                             mipmapLevel:0];
+                    char path[1024];
+                    snprintf(path, sizeof(path), "%s%u_%08lx.raw", sdump,
+                             round, (unsigned long)s->vram_addr);
+                    FILE *sf = fopen(path, "wb");
+                    if (sf) {
+                        uint32_t hdr[2] = { tw, th };
+                        fwrite(hdr, sizeof(hdr), 1, sf);
+                        fwrite(sb, 4, sn, sf);
+                        fclose(sf);
+                        fprintf(stderr, "surface @%08lx %ux%u -> %s\n",
+                                (unsigned long)s->vram_addr, tw, th, path);
+                    }
+                    g_free(sb);
                 }
             }
         }
@@ -1158,17 +1246,6 @@ void pgraph_metal_draw_end(NV2AState *d)
             }
         }
 
-        if (r->command_buffer.status != MTLCommandBufferStatusCompleted) {
-            r->cmdbuf_errors++;
-            if (r->cmdbuf_errors < 5) {
-                NSError *e = r->command_buffer.error;
-                fprintf(stderr,
-                        "nv2a: metal: command buffer status=%ld error=%s\n",
-                        (long)r->command_buffer.status,
-                        e ? [[e localizedDescription] UTF8String] : "(none)");
-            }
-        }
-        r->command_buffer = nil;
     }
 
     pg->draw_time++;
@@ -1197,6 +1274,24 @@ void pgraph_metal_draw_end(NV2AState *d)
                     pg->surface_shape.clip_width,
                     pg->surface_shape.clip_height,
                     (__bridge void *)r->color_binding->texture);
+        }
+    }
+
+    if (getenv("XEMU_METAL_THROUGHPUT")) {
+        static unsigned long last_draws;
+        static int64_t last_ns;
+        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+        if (last_ns == 0) {
+            last_ns = now;
+        } else if (now - last_ns >= 2 * 1000000000LL) {
+            double secs = (double)(now - last_ns) / 1e9;
+            fprintf(stderr,
+                    "throughput: %.0f draws/s (%lu draws, %lu passes, "
+                    "%lu submits)\n",
+                    (double)(r->draws_issued - last_draws) / secs,
+                    r->draws_issued, r->passes, r->submits);
+            last_draws = r->draws_issued;
+            last_ns = now;
         }
     }
 
@@ -1437,6 +1532,9 @@ void pgraph_metal_report_shader_stats(PGRAPHState *pg)
 {
     PGRAPHMetalState *r = pg->metal_renderer_state;
 
+    fprintf(stderr,
+            "nv2a: metal: render passes %lu, submits %lu for %lu draws\n",
+            r->passes, r->submits, r->draws_issued);
     fprintf(stderr,
             "nv2a: metal: shaders %u ok / %u failed, pipelines %u ok / %u "
             "failed, draws issued %lu, unsupported prims %lu draws %lu\n",

@@ -40,6 +40,7 @@
 #include "ui/xemu-settings.h"
 #include "renderer.h"
 #include "surface.h"
+#include "draw.h"
 
 /* ------------------------------------------------------------------ */
 /* Format maps.                                                        */
@@ -193,6 +194,11 @@ void pgraph_metal_surface_invalidate(NV2AState *d,
     }
 
     unregister_cpu_access_callback(d, surface);
+
+    /* The open pass may be targeting this texture. Submit it before the
+     * binding goes away; Metal keeps the texture alive until the command
+     * buffer retires, so there is no need to wait for it. */
+    pgraph_metal_flush_gpu(d, false);
 
     surface->texture = nil;
     QTAILQ_REMOVE(&r->surfaces, surface, entry);
@@ -492,6 +498,10 @@ static void surface_download_to_buffer(NV2AState *d,
                 (unsigned long)surface->texture.height);
         return;
     }
+    /* Draws accumulate in an open render pass; the target is not readable
+     * until that pass has been submitted and has finished. */
+    pgraph_metal_flush_gpu(d, true);
+
     MTLRegion region = MTLRegionMake2D(0, 0, rw, rh);
     [surface->texture getBytes:read_buf
                    bytesPerRow:scale * surface->pitch
@@ -677,6 +687,9 @@ void pgraph_metal_upload_surface_data(NV2AState *d,
          * so leave the target alone rather than corrupt it. */
         return;
     }
+
+    /* A CPU write into a texture the open pass may still be rendering to. */
+    pgraph_metal_flush_gpu(d, true);
 
     [surface->texture replaceRegion:MTLRegionMake2D(0, 0, w, h)
                         mipmapLevel:0
@@ -1094,6 +1107,11 @@ void pgraph_metal_clear_surface(NV2AState *d, uint32_t parameter)
         }
 
         if (any) {
+            /* Ordering: the open pass holds draws recorded before this clear,
+             * and they must be submitted first or the clear would be applied
+             * underneath them. */
+            pgraph_metal_flush_gpu(d, false);
+
             /* An empty render pass is exactly a clear: the load action does
              * the work and there is nothing to draw. */
             id<MTLCommandBuffer> cmd = [r->queue commandBuffer];
@@ -1189,6 +1207,8 @@ static void flush_surfaces(NV2AState *d)
 void pgraph_metal_surface_flush(NV2AState *d)
 {
     PGRAPHState *pg = &d->pgraph;
+
+    pgraph_metal_flush_gpu(d, true);
 
     /* Clearing bindings forces the next surface_update to re-resolve them. */
     pgraph_metal_unbind_surface(d, true);
