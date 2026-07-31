@@ -603,6 +603,38 @@ out from evidence this session was wrong (bad unswizzle, missing geometry
 shader, depth quantisation, "the fixed-function path"). The one arrived
 at by mechanical bisection was right, in six runs. Bisect first.
 
+## Emblem: everything ruled out, and what is left (end of 2026-07-30)
+
+Measured NOT to be the cause, each by direct comparison against the GL
+backend, not by argument:
+
+  texture decode; guest behaviour (draw sequences byte-identical over
+  4000 draws); surface management (creation sets identical); memory
+  writeback (the surface is already wrong on the GPU, before any copy);
+  the fixed-function transform (hand-checked against the dumped matrix,
+  w 165.82 computed vs 165.859 reported); culling; depth testing; depth
+  quantisation (dropping the D24 +1 ULP changed exactly zero bytes); the
+  absent geometry shader (replaced with rasterizer interpolation
+  qualifiers, emblem unchanged); shader codegen on BOTH paths (MSL and
+  GLSL entry points differ by exactly three expected lines); RCC; draw
+  3's uniform data (c[96..99] a sane projection matrix, c[58]/c[59] a
+  sane viewport scale/offset); winding and the Y-axis convention
+  (flipping it is worse: 1711609 vs 1667766); and the entire MAC/ILU
+  opcode layer -- DP4, MAD, MUL, ADD, MOV and their helpers are textually
+  identical between dialects, _MUL differing only by `inline`.
+
+What remains unexamined is narrow: whether the translated instruction
+*sequence* produces the same values for this specific 1008-vertex
+program. A whole-shader textual diff cannot show that -- register file
+behaviour, write masks and swizzles could still differ in effect while
+matching character for character in source.
+
+The tool for it already exists: XEMU_METAL_DEBUG_POS_PROG dumps the
+per-vertex clip output for exactly this draw. Evaluate the same microcode
+on the CPU for a handful of its vertices and compare. That is a
+measurement, not another hypothesis, and it is where the next session
+should start.
+
 ## What to do next, in order
 
 1. **Finish correctness on the BIOS.** Texture formats and the gaps above.
