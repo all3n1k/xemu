@@ -516,6 +516,29 @@ static void surface_download_to_buffer(NV2AState *d,
                     fromRegion:region
                    mipmapLevel:0];
 
+    /*
+     * XEMU_METAL_FLIP_DOWNLOAD: reverse row order on the way to guest
+     * memory.
+     *
+     * Metal writes row 0 as the top of a rendered image where GL writes it
+     * as the bottom, so a surface that the guest later samples back as a
+     * texture -- the Xbox logo is rendered into 02454000, blitted, then
+     * sampled -- comes out vertically mirrored. Gated because it also
+     * affects the scanout download, which is not obviously mirrored, so the
+     * two cases may need separating.
+     */
+    if (getenv("XEMU_METAL_FLIP_DOWNLOAD")) {
+        size_t drow = scale * surface->pitch;
+        g_autofree uint8_t *tmp = g_malloc(drow);
+        for (unsigned int y = 0; y < rh / 2; y++) {
+            uint8_t *a = read_buf + (size_t)y * drow;
+            uint8_t *b = read_buf + (size_t)(rh - 1 - y) * drow;
+            memcpy(tmp, a, drow);
+            memcpy(a, b, drow);
+            memcpy(b, tmp, drow);
+        }
+    }
+
     /* FIXME: Replace with a hardware-accelerated downscale. */
     if (downscale) {
         assert(surface->pitch >= (surface->width * bpp));
