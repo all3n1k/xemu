@@ -555,6 +555,54 @@ single highest-value thing left, and it is not a small fix. The options:
 The MoltenVK forks linked from the xemu Discord hit the same wall (Metal
 has no geometry shaders) and are worth reading before choosing.
 
+## Emblem status at end of 2026-07-30
+
+The tiled pixel grid is FIXED (surface swizzle re-stamp). The XBOX
+wordmark renders clean. The X emblem still renders as a distorted solid
+shard.
+
+Bisected mechanically with XEMU_METAL_SKIP_TARGET=02454000 plus
+XEMU_METAL_SKIP_INDEX=<n>, against the GL reference dumped by
+XEMU_BLIT_DUMP (baseline 1667766 differing bytes of 4194312):
+
+    skip 0 -> 1659237      skip 4..10 -> 1667766 (no change; the dump is
+    skip 1 -> 1741684              taken at the first blit, so only
+    skip 2 -> 1669553              draws 0-3 precede it)
+    skip 3 -> 1308549  <-- -359217, the fault
+
+Draw 3 is prim=5, 1008 vertices, and is_fixed_function=0 -- one of only
+two programmable draws in the set and the only one before the blit. Its
+neighbours 0,1,2,4,5,6 are all fixed function and fine.
+
+Verified NOT at fault, each by direct measurement, all previously
+asserted with too much confidence:
+
+  - texture decode; guest behaviour (draw sequences byte-identical for
+    4000 draws); surface management (creation sets identical); memory
+    writeback (the surface is already wrong on the GPU); the
+    fixed-function transform (hand-checked against the dumped
+    compositeMat: w 165.82 computed vs 165.859 reported); culling
+    (NO_CULL is worse); depth testing (DEPTH_ALWAYS is worse); depth
+    quantisation (dropping the D24 +1 ULP changed exactly zero bytes);
+    the missing geometry shader (implemented via rasterizer interpolation
+    qualifiers, emblem unchanged).
+  - Shader codegen on BOTH paths. MSL and GLSL generated from the same
+    state differ by exactly three lines -- the entry signature and the
+    two GL epilogue statements MSL replaces. Confirmed for a
+    fixed-function state and for a programmable one.
+
+Next: the shader dump grabs the first two programmable states compiled,
+which are not necessarily draw 3's, so dump *that* draw's program
+specifically and check its microcode translation and its uniforms. The
+programmable path has constructs fixed function never touches -- MAC/ILU
+opcode translation, the A0 address register, relative constant addressing
+c[A0+n]. None has been checked against draw 3.
+
+Method note, worth more than any of the above: every root cause reasoned
+out from evidence this session was wrong (bad unswizzle, missing geometry
+shader, depth quantisation, "the fixed-function path"). The one arrived
+at by mechanical bisection was right, in six runs. Bisect first.
+
 ## What to do next, in order
 
 1. **Finish correctness on the BIOS.** Texture formats and the gaps above.
