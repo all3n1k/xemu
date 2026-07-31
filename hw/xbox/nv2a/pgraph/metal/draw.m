@@ -283,6 +283,15 @@ static void bind_uniforms(PGRAPHState *pg, id<MTLRenderCommandEncoder> enc,
         static bool once;
         if (!once) {
             once = true;
+            fprintf(stderr, "psh uniform layout (size %zu):\n", psh_size);
+            for (size_t q = 0; q < PshUniform__COUNT; q++) {
+                fprintf(stderr,
+                        "  %-16s off=%5zu stride=%3zu  src_off=%5zu "
+                        "src_stride=%3zu count=%zu\n",
+                        PshUniformInfo[q].name, psh_members[q].offset,
+                        psh_members[q].stride, psh_members[q].src_offset,
+                        psh_members[q].src_stride, psh_members[q].count);
+            }
             fprintf(stderr, "vsh uniform layout (size %zu):\n", vsh_size);
             for (size_t q = 0; q < VshUniform__COUNT; q++) {
                 fprintf(stderr,
