@@ -1418,7 +1418,23 @@ void pgraph_metal_flush_draw(NV2AState *d)
         static int seq;
         const char *si = getenv("XEMU_METAL_SKIP_INDEX");
         int want = si ? atoi(si) : -1;
-        if (seq++ == want) {
+        int cur = seq++;
+
+        /* Dump the shader belonging to one specific draw, rather than the
+         * first few states compiled, which need not include it. */
+        const char *dvs = getenv("XEMU_METAL_DUMP_DRAW_VSH");
+        if (dvs && cur == want) {
+            MString *msl = pgraph_metal_gen_vsh(&sb->state.vsh);
+            char path[1024];
+            snprintf(path, sizeof(path), "%s_draw%d.msl", dvs, cur);
+            FILE *f = fopen(path, "w");
+            if (f) { fputs(mstring_get_str(msl), f); fclose(f); }
+            mstring_unref(msl);
+            fprintf(stderr, "draw %d shader dumped: ff=%d -> %s\n", cur,
+                    sb->state.vsh.is_fixed_function, path);
+        }
+
+        if (!dvs && cur == want) {
             return;
         }
     }
