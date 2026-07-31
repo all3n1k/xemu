@@ -513,6 +513,19 @@ void pgraph_msl_gen_vtx_struct(MString *out, const char *name, bool smooth,
 {
     mstring_append_fmt(out, "struct %s {\n", name);
     mstring_append(out, "  float4 nv2a_position [[position]];\n");
+    /*
+     * Depth interpolants. psh.c reconstructs the depth value by
+     * barycentrically interpolating across the triangle from vtxPos0/1/2,
+     * which only a geometry shader can supply and Metal has none. Those two
+     * interpolations are however exactly what the rasterizer already does:
+     * the z_perspective path divides the barycentrics by w before
+     * normalising (perspective-correct interpolation of vtxPos.w) and the
+     * other path does not (screen-linear interpolation of vtxPos.z). Emitting
+     * them as interpolants with the matching qualifier gives the same result
+     * without the missing stage.
+     */
+    mstring_append(out, "  float nv2a_zPersp [[center_perspective]];\n");
+    mstring_append(out, "  float nv2a_zLinear [[center_no_perspective]];\n");
     if (is_vertex) {
         mstring_append(out, "  float nv2a_pointSize [[point_size]];\n");
     } else {
@@ -552,5 +565,8 @@ void pgraph_msl_gen_vtx_in_locals(MString *out)
         mstring_append_fmt(out, "  %s %s = in.%s;\n", msl_vtx_attrs[i].type,
                            msl_vtx_attrs[i].name, msl_vtx_attrs[i].name);
     }
+    /* Depth interpolants; see pgraph_msl_gen_vtx_struct(). */
+    mstring_append(out, "  float nv2a_zPersp = in.nv2a_zPersp;\n");
+    mstring_append(out, "  float nv2a_zLinear = in.nv2a_zLinear;\n");
     mstring_append(out, "\n");
 }

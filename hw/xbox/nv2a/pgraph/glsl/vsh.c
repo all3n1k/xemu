@@ -498,6 +498,8 @@ MString *pgraph_glsl_gen_vsh(const VshState *state, GenVshGlslOptions opts)
     if (opts.metal) {
         /* Metal clip space matches Vulkan/D3D: z in [0,1], no remap needed. */
         mstring_append(body, "  out.nv2a_position = oPos;\n");
+        mstring_append(body, "  out.nv2a_zPersp = vtxPos.w;\n");
+        mstring_append(body, "  out.nv2a_zLinear = vtxPos.z;\n");
         pgraph_msl_gen_vtx_out_pack(body);
         if (opts.debug_pos) {
             mstring_append(body,

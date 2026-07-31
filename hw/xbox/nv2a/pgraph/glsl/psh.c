@@ -1056,7 +1056,40 @@ static MString* psh_convert(struct PixelShader *ps)
                              "}\n");
     }
 
-    if (ps->state->z_perspective) {
+    if (ps->opts.metal) {
+        /*
+         * Metal has no geometry shader, so vtxPos0/1/2 and triMZ -- which are
+         * per-triangle values -- cannot be produced. The barycentric
+         * reconstruction below is however exactly two interpolations the
+         * rasterizer already performs: the z_perspective path divides the
+         * barycentrics by w before normalising, which is perspective-correct
+         * interpolation of vtxPos.w, and the other path does not, which is
+         * screen-linear interpolation of vtxPos.z. The vertex stage emits
+         * both as interpolants with the matching qualifier.
+         *
+         * The depthFactor*triMZ slope term is dropped: it needs the maximum
+         * depth slope over the triangle, which genuinely does need the
+         * missing stage. triMZ was already hardcoded to zero here, so this
+         * loses nothing that was working.
+         */
+        if (ps->state->z_perspective) {
+            mstring_append(
+                clip,
+                "float zvalue = nv2a_zPersp;\n"
+                "if (zvalue > 0.0) {\n"
+                "  zvalue += depthOffset;\n"
+                "} else {\n"
+                "  zvalue = uintBitsToFloat(0x7F7FFFFFu);\n"
+                "}\n"
+                "if (isnan(zvalue)) {\n"
+                "  zvalue = uintBitsToFloat(0x7F7FFFFFu);\n"
+                "}\n");
+        } else {
+            mstring_append(clip,
+                           "float zvalue = nv2a_zLinear;\n"
+                           "zvalue += depthOffset;\n");
+        }
+    } else if (ps->state->z_perspective) {
         mstring_append(
             clip,
             "vec2 unscaled_xy = gl_FragCoord.xy / vec2(surfaceScale);\n"
