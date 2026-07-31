@@ -1273,6 +1273,33 @@ void pgraph_metal_draw_end(NV2AState *d)
 
     }
 
+    if (getenv("XEMU_METAL_TRACE_STATE") && r->color_binding &&
+        r->shader_binding) {
+        const char *t = getenv("XEMU_METAL_TRACE_STATE");
+        if ((unsigned long)r->color_binding->vram_addr ==
+            strtoul(t, NULL, 16)) {
+            uint32_t bl = pgraph_reg_r(pg, NV_PGRAPH_BLEND);
+            uint32_t c0 = pgraph_reg_r(pg, NV_PGRAPH_CONTROL_0);
+            fprintf(stderr,
+                    "ST prim=%d ff=%d zpersp=%d blend_en=%d blend=%08x "
+                    "ctrl0=%08x zwrite=%d ztest=%d zfunc=%d "
+                    "cmask(a%d r%d g%d b%d) alphatest=%d\n",
+                    pg->primitive_mode,
+                    r->shader_binding->state.vsh.is_fixed_function,
+                    r->shader_binding->state.psh.z_perspective,
+                    !!(bl & NV_PGRAPH_BLEND_EN), bl, c0,
+                    !!(c0 & NV_PGRAPH_CONTROL_0_ZWRITEENABLE),
+                    !!(c0 & NV_PGRAPH_CONTROL_0_ZENABLE),
+                    (int)GET_MASK(pgraph_reg_r(pg, NV_PGRAPH_CONTROL_0),
+                                  NV_PGRAPH_CONTROL_0_ZFUNC),
+                    !!(c0 & NV_PGRAPH_CONTROL_0_ALPHA_WRITE_ENABLE),
+                    !!(c0 & NV_PGRAPH_CONTROL_0_RED_WRITE_ENABLE),
+                    !!(c0 & NV_PGRAPH_CONTROL_0_GREEN_WRITE_ENABLE),
+                    !!(c0 & NV_PGRAPH_CONTROL_0_BLUE_WRITE_ENABLE),
+                    r->shader_binding->state.psh.alpha_test);
+        }
+    }
+
     if (getenv("XEMU_DRAW_TRACE")) {
         static unsigned long dn;
         static unsigned long cap;
