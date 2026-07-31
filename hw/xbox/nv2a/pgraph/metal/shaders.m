@@ -42,8 +42,12 @@ MString *pgraph_metal_gen_vsh(const VshState *state)
     const char *dump = getenv("XEMU_METAL_DUMP_VSH");
     if (dump) {
         static int n;
-        bool want = !getenv("XEMU_METAL_DUMP_VSH_FF") ||
-                    state->is_fixed_function;
+        bool want = true;
+        if (getenv("XEMU_METAL_DUMP_VSH_FF")) {
+            want = state->is_fixed_function;
+        } else if (getenv("XEMU_METAL_DUMP_VSH_PROG")) {
+            want = !state->is_fixed_function;
+        }
         if (want && n < 2) {
             GenVshGlslOptions g = { .vulkan = false, .ubo_binding = 0 };
             MString *glsl = pgraph_glsl_gen_vsh(state, g);

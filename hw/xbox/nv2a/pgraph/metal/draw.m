@@ -1101,8 +1101,12 @@ void pgraph_metal_draw_end(NV2AState *d)
             !only || (r->color_binding &&
                       (unsigned long)r->color_binding->vram_addr ==
                           strtoul(only, NULL, 16));
+        bool pos_prog_ok =
+            !getenv("XEMU_METAL_DEBUG_POS_PROG") ||
+            (r->shader_binding &&
+             !r->shader_binding->state.vsh.is_fixed_function);
         if (getenv("XEMU_METAL_DEBUG_POS") && r->debug_pos_buffer &&
-            pos_target_ok) {
+            pos_target_ok && pos_prog_ok) {
             static int shown;
             if (shown++ < 3) {
                 unsigned int n = r->debug_pos_count;
