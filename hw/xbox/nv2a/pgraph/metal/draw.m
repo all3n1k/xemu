@@ -1403,6 +1403,22 @@ void pgraph_metal_flush_draw(NV2AState *d)
         return;
     }
 
+    /*
+     * Bisect aid: skip the Nth draw into a chosen render target.
+     * XEMU_METAL_SKIP_TARGET=<hex addr> XEMU_METAL_SKIP_INDEX=<n>.
+     */
+    const char *skip_t = getenv("XEMU_METAL_SKIP_TARGET");
+    if (skip_t && r->color_binding &&
+        (unsigned long)r->color_binding->vram_addr ==
+            strtoul(skip_t, NULL, 16)) {
+        static int seq;
+        const char *si = getenv("XEMU_METAL_SKIP_INDEX");
+        int want = si ? atoi(si) : -1;
+        if (seq++ == want) {
+            return;
+        }
+    }
+
     bool debug_shader = getenv("XEMU_METAL_DEBUG_SHADER") != NULL;
     bool debug_fs = getenv("XEMU_METAL_DEBUG_FS") != NULL;
 
