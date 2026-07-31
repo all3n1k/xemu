@@ -638,10 +638,22 @@ static id<MTLDepthStencilState> get_depth_stencil_state(NV2AState *d)
     };
 
     MTLDepthStencilDescriptor *dsd = [[MTLDepthStencilDescriptor alloc] init];
+
+    /*
+     * With no zeta bound, GL has no depth attachment at all and the depth
+     * test is a no-op. Metal always needs one -- the generated fragment
+     * shader writes depth and a pipeline that does so is rejected without an
+     * attachment -- so an unbound-zeta draw gets the scratch target, whose
+     * load action is DontCare and whose contents are therefore undefined.
+     * Testing against that discards fragments arbitrarily. depthWriteEnabled
+     * already guarded on the binding; the compare function did not.
+     */
+    bool have_zeta = r->zeta_binding != NULL;
     dsd.depthCompareFunction =
-        (depth_test && func < ARRAY_SIZE(cmp_map)) ? cmp_map[func]
-                                                   : MTLCompareFunctionAlways;
-    dsd.depthWriteEnabled = depth_write && r->zeta_binding != NULL;
+        (have_zeta && depth_test && func < ARRAY_SIZE(cmp_map))
+            ? cmp_map[func]
+            : MTLCompareFunctionAlways;
+    dsd.depthWriteEnabled = depth_write && have_zeta;
 
     /* Bisect aid: take depth out of the picture entirely. */
     if (getenv("XEMU_METAL_DEPTH_ALWAYS")) {
