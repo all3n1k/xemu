@@ -91,6 +91,20 @@ static MetalTextureFormat metal_texture_format(unsigned int fmt)
     /* Palettized: pgraph_convert_texture_data() expands this to 32-bit. */
     MAP(NV097_SET_TEXTURE_FORMAT_COLOR_SZ_I8_A8R8G8B8,   MTLPixelFormatBGRA8Unorm);
 
+    /*
+     * Depth buffers sampled as textures. The guest reads these as luminance,
+     * so a single-channel format of the right width is what is wanted, not a
+     * depth format -- Metal cannot sample a depth attachment as colour.
+     * 0x30 (LU_IMAGE_DEPTH_Y16_FIXED) was the last format still falling back
+     * to a flat white texture over a BIOS boot.
+     */
+    MAP(NV097_SET_TEXTURE_FORMAT_COLOR_SZ_DEPTH_Y16_FIXED,
+        MTLPixelFormatR16Unorm);
+    MAP(NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_DEPTH_Y16_FIXED,
+        MTLPixelFormatR16Unorm);
+    MAP(NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_DEPTH_Y16_FLOAT,
+        MTLPixelFormatR16Float);
+
     default:
         return (MetalTextureFormat){ MTLPixelFormatInvalid, false, false };
     }
