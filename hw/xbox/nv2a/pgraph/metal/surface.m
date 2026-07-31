@@ -517,17 +517,20 @@ static void surface_download_to_buffer(NV2AState *d,
                    mipmapLevel:0];
 
     /*
-     * XEMU_METAL_FLIP_DOWNLOAD: reverse row order on the way to guest
-     * memory.
+     * Reverse row order on the way to guest memory, for render-to-texture
+     * downloads only.
      *
      * Metal writes row 0 as the top of a rendered image where GL writes it
-     * as the bottom, so a surface that the guest later samples back as a
-     * texture -- the Xbox logo is rendered into 02454000, blitted, then
-     * sampled -- comes out vertically mirrored. Gated because it also
-     * affects the scanout download, which is not obviously mirrored, so the
-     * two cases may need separating.
+     * as the bottom, so a surface the guest samples back as a texture -- the
+     * Xbox logo is rendered into 02454000, blitted, then sampled -- comes
+     * out vertically mirrored without this.
+     *
+     * Applying it to every download is wrong: it also inverts the scanout,
+     * which the user confirmed by seeing the background 3D elements flip to
+     * the top of the screen. Only the texture case gets flipped.
      */
-    if (getenv("XEMU_METAL_FLIP_DOWNLOAD")) {
+    PGRAPHMetalState *rdl = d->pgraph.metal_renderer_state;
+    if (rdl->download_for_texture && !getenv("XEMU_METAL_NO_FLIP")) {
         size_t drow = scale * surface->pitch;
         g_autofree uint8_t *tmp = g_malloc(drow);
         for (unsigned int y = 0; y < rh / 2; y++) {

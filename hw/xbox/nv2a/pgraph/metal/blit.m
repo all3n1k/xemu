@@ -92,7 +92,15 @@ void pgraph_metal_image_blit(NV2AState *d)
                 surf_src->swizzle, surf_src->draw_dirty);
     }
     if (surf_src) {
+        /*
+         * This download exists so the guest can read the rendered result
+         * back through memory, typically to sample it as a texture. That is
+         * the one case whose row order has to be reversed for Metal.
+         */
+        PGRAPHMetalState *rs = d->pgraph.metal_renderer_state;
+        rs->download_for_texture = true;
         pgraph_metal_surface_download_if_dirty(d, surf_src);
+        rs->download_for_texture = false;
     }
 
     /*

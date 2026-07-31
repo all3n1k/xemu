@@ -161,6 +161,11 @@ typedef struct PGRAPHMetalState {
     unsigned long            cmdbuf_errors;
     MTLVertexDescriptor      *pending_vd;
 
+    /* Set while downloading a surface that the guest is about to read back
+     * as a texture, rather than for scanout. Only that case needs the row
+     * order reversed -- see surface_download_to_buffer. */
+    bool                     download_for_texture;
+
     /* Diagnostics: XEMU_METAL_DEBUG_POS makes the vertex shader also write
      * its computed clip position here, so the transform can be read back. */
     /*
