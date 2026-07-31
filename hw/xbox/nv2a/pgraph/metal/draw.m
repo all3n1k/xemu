@@ -856,6 +856,7 @@ void pgraph_metal_flush_gpu(NV2AState *d, bool wait)
     [r->command_buffer commit];
     r->submits++;
     r->uniform_offset = 0;
+    r->const_attr_offset = 0;
 
     if (wait) {
         [r->command_buffer waitUntilCompleted];

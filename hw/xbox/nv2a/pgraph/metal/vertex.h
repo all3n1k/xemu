@@ -26,6 +26,11 @@
  * vertex attribute buffers start at 1. */
 #define METAL_VERTEX_BUFFER_BASE 1
 
+/* One block of 16 float4 constant attributes, claimed per draw. */
+#define METAL_CONST_ATTR_BLOCK (NV2A_VERTEXSHADER_ATTRIBUTES * 16)
+
+size_t pgraph_metal_claim_const_block(PGRAPHMetalState *r);
+
 void pgraph_metal_init_vertex(NV2AState *d);
 void pgraph_metal_finalize_vertex(PGRAPHState *pg);
 

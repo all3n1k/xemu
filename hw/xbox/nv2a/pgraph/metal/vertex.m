@@ -70,10 +70,17 @@ void pgraph_metal_init_vertex(NV2AState *d)
         r->vram_buffer_is_copy = true;
     }
 
-    /* Scratch buffer for constant (non-array) attributes: 16 slots x float4. */
+    /*
+     * Constant (non-array) attributes. One 16-slot x float4 block per draw,
+     * not one shared block: draws accumulate in an open render pass, so
+     * rewriting a shared block would change the values of draws already
+     * recorded but not yet executed. Sized for many draws per pass and
+     * grown on demand.
+     */
     r->const_attr_buffer =
-        [r->device newBufferWithLength:NV2A_VERTEXSHADER_ATTRIBUTES * 16
+        [r->device newBufferWithLength:METAL_CONST_ATTR_BLOCK * 4096
                                options:MTLResourceStorageModeShared];
+    r->const_attr_offset = 0;
 }
 
 void pgraph_metal_finalize_vertex(PGRAPHState *pg)
@@ -152,13 +159,32 @@ static MTLVertexFormat metal_vertex_format(unsigned int format,
     return MTLVertexFormatInvalid;
 }
 
+/* Claim this draw's constant-attribute block, growing the buffer if the
+ * current pass has used it up. Returns the byte offset of the block. */
+size_t pgraph_metal_claim_const_block(PGRAPHMetalState *r)
+{
+    if (r->const_attr_offset + METAL_CONST_ATTR_BLOCK >
+        r->const_attr_buffer.length) {
+        size_t want = r->const_attr_buffer.length * 2;
+        r->const_attr_buffer =
+            [r->device newBufferWithLength:want
+                                   options:MTLResourceStorageModeShared];
+        r->const_attr_offset = 0;
+    }
+    size_t off = r->const_attr_offset;
+    r->const_attr_offset += METAL_CONST_ATTR_BLOCK;
+    return off;
+}
+
 MTLVertexDescriptor *pgraph_metal_build_vertex_descriptor(NV2AState *d)
 {
     PGRAPHState *pg = &d->pgraph;
     PGRAPHMetalState *r = pg->metal_renderer_state;
 
     MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
-    float *const_data = (float *)r->const_attr_buffer.contents;
+    size_t cbase = pgraph_metal_claim_const_block(r);
+    float *const_data = (float *)((uint8_t *)r->const_attr_buffer.contents +
+                                  cbase);
 
     pg->compressed_attrs = 0;
     pg->swizzle_attrs = 0;
@@ -222,7 +248,7 @@ MTLVertexDescriptor *pgraph_metal_build_vertex_descriptor(NV2AState *d)
         vd.layouts[slot].stepFunction = MTLVertexStepFunctionConstant;
         vd.layouts[slot].stepRate = 0;
 
-        r->attr_buffer_offset[i] = i * 16;
+        r->attr_buffer_offset[i] = cbase + i * 16;
         r->attr_is_constant[i] = true;
     }
 
@@ -246,6 +272,8 @@ unsigned int pgraph_metal_bind_inline_buffer(NV2AState *d,
     if (!count) {
         return 0;
     }
+
+    size_t cbase = pgraph_metal_claim_const_block(r);
 
     for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
         VertexAttribute *attr = &pg->vertex_attributes[i];
@@ -272,13 +300,14 @@ unsigned int pgraph_metal_bind_inline_buffer(NV2AState *d,
                    sizeof(attr->inline_value));
         } else {
             /* Constant for every vertex. */
-            float *cd = (float *)r->const_attr_buffer.contents;
+            float *cd = (float *)((uint8_t *)r->const_attr_buffer.contents +
+                                  cbase);
             memcpy(&cd[i * 4], attr->inline_value, sizeof(float) * 4);
             vd.layouts[slot].stride = 16;
             vd.layouts[slot].stepFunction = MTLVertexStepFunctionConstant;
             vd.layouts[slot].stepRate = 0;
             [enc setVertexBuffer:r->const_attr_buffer
-                          offset:i * 16
+                          offset:cbase + i * 16
                          atIndex:slot];
         }
     }
@@ -296,6 +325,8 @@ unsigned int pgraph_metal_bind_inline_array(NV2AState *d,
 {
     PGRAPHState *pg = &d->pgraph;
     PGRAPHMetalState *r = pg->metal_renderer_state;
+
+    size_t cbase = pgraph_metal_claim_const_block(r);
 
     unsigned int offset = 0;
     for (int i = 0; i < NV2A_VERTEXSHADER_ATTRIBUTES; i++) {
@@ -352,7 +383,8 @@ unsigned int pgraph_metal_bind_inline_array(NV2AState *d,
         NSUInteger slot = METAL_VERTEX_BUFFER_BASE + i;
 
         if (attr->count == 0) {
-            float *cd = (float *)r->const_attr_buffer.contents;
+            float *cd = (float *)((uint8_t *)r->const_attr_buffer.contents +
+                                  cbase);
             memcpy(&cd[i * 4], attr->inline_value, sizeof(float) * 4);
             vd.attributes[i].format = MTLVertexFormatFloat4;
             vd.attributes[i].offset = 0;
@@ -361,7 +393,7 @@ unsigned int pgraph_metal_bind_inline_array(NV2AState *d,
             vd.layouts[slot].stepFunction = MTLVertexStepFunctionConstant;
             vd.layouts[slot].stepRate = 0;
             [enc setVertexBuffer:r->const_attr_buffer
-                          offset:i * 16
+                          offset:cbase + i * 16
                          atIndex:slot];
             continue;
         }

@@ -94,6 +94,7 @@ typedef struct PGRAPHMetalState {
     id<MTLBuffer>            vram_buffer;
     bool                     vram_buffer_is_copy;
     id<MTLBuffer>            const_attr_buffer;
+    size_t                   const_attr_offset;
     id<MTLBuffer>            index_buffer;
     size_t                   attr_buffer_offset[NV2A_VERTEXSHADER_ATTRIBUTES];
     bool                     attr_is_constant[NV2A_VERTEXSHADER_ATTRIBUTES];
