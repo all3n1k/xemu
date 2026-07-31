@@ -272,7 +272,7 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
     }
 
     MetalTextureFormat mf = metal_texture_format(s->color_format);
-    if (!mf.supported || s->dimensionality != 2 || s->cubemap) {
+    if (!mf.supported || s->dimensionality != 2) {
         r->texture_unsupported++;
         if (!r->reported_format[s->color_format & 0x3F]) {
             r->reported_format[s->color_format & 0x3F] = true;
@@ -361,11 +361,19 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
         pitch = width * 4; /* conversion expands to 32-bit */
     }
 
-    MTLTextureDescriptor *td = [MTLTextureDescriptor
-        texture2DDescriptorWithPixelFormat:mf.pixel_format
-                                     width:width
-                                    height:height
-                                 mipmapped:NO];
+    MTLTextureDescriptor *td;
+    if (s->cubemap) {
+        td = [MTLTextureDescriptor
+            textureCubeDescriptorWithPixelFormat:mf.pixel_format
+                                            size:width
+                                       mipmapped:NO];
+    } else {
+        td = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:mf.pixel_format
+                                         width:width
+                                        height:height
+                                     mipmapped:NO];
+    }
     td.storageMode = MTLStorageModeShared;
     td.usage = MTLTextureUsageShaderRead;
 
@@ -375,10 +383,49 @@ static id<MTLTexture> upload_texture(NV2AState *d, int i,
         return r->white_texture;
     }
 
-    [tex replaceRegion:MTLRegionMake2D(0, 0, width, height)
-           mipmapLevel:0
-             withBytes:src
-           bytesPerRow:pitch];
+    if (s->cubemap) {
+        /*
+         * Six faces stored consecutively, each holding a full mip chain and
+         * padded to NV2A_CUBEMAP_FACE_ALIGNMENT, matching gl/texture.c. Only
+         * level 0 is uploaded here, but the face stride still has to account
+         * for the whole chain or faces 1..5 read from the wrong offset.
+         */
+        size_t face_len = 0;
+        unsigned int fw = s->width, fh = s->height;
+        for (unsigned int lvl = 0; lvl < MAX(s->levels, 1u); lvl++) {
+            face_len += (size_t)fw * fh * f.bytes_per_pixel;
+            fw = MAX(fw / 2, 1u);
+            fh = MAX(fh / 2, 1u);
+        }
+        face_len = (face_len + NV2A_CUBEMAP_FACE_ALIGNMENT - 1) &
+                   ~((size_t)NV2A_CUBEMAP_FACE_ALIGNMENT - 1);
+
+        for (unsigned int face = 0; face < 6; face++) {
+            const uint8_t *fsrc = texture_data + (size_t)face * face_len;
+            g_autofree uint8_t *funsw = NULL;
+            if (!f.linear) {
+                funsw = g_malloc((size_t)height * pitch);
+                unswizzle_rect(fsrc, width, height, funsw, pitch,
+                               f.bytes_per_pixel);
+                fsrc = funsw;
+            }
+            g_autofree uint8_t *fconv = pgraph_convert_texture_data(
+                *s, fsrc, palette_data, width, height, 1, pitch, 0, NULL);
+            const uint8_t *fup = fconv ? fconv : fsrc;
+            unsigned int fpitch = fconv ? width * 4 : pitch;
+            [tex replaceRegion:MTLRegionMake2D(0, 0, width, height)
+                   mipmapLevel:0
+                         slice:face
+                     withBytes:fup
+                   bytesPerRow:fpitch
+                 bytesPerImage:0];
+        }
+    } else {
+        [tex replaceRegion:MTLRegionMake2D(0, 0, width, height)
+               mipmapLevel:0
+                 withBytes:src
+               bytesPerRow:pitch];
+    }
 
     r->texture_uploads++;
 
