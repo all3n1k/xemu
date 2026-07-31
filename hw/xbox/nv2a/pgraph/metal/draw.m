@@ -883,11 +883,16 @@ static void apply_dynamic_state(NV2AState *d, id<MTLRenderCommandEncoder> enc)
         [enc setScissorRect:(MTLScissorRect){ xmin, ymin, sw, sh }];
     }
 
-    /* Winding is reversed because clip-space y is inverted, matching GL. */
-    [enc setFrontFacingWinding:(pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
-                                NV_PGRAPH_SETUPRASTER_FRONTFACE)
-                                   ? MTLWindingClockwise
-                                   : MTLWindingCounterClockwise];
+    /* Winding is reversed because clip-space y is inverted, matching GL.
+     * XEMU_METAL_FLIP_WINDING tests that assumption, which was carried from
+     * the first draw ever issued and never checked against a result. */
+    bool front_cw = (pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
+                     NV_PGRAPH_SETUPRASTER_FRONTFACE) != 0;
+    if (getenv("XEMU_METAL_FLIP_WINDING")) {
+        front_cw = !front_cw;
+    }
+    [enc setFrontFacingWinding:front_cw ? MTLWindingClockwise
+                                        : MTLWindingCounterClockwise];
 
     if (pgraph_reg_r(pg, NV_PGRAPH_SETUPRASTER) &
         NV_PGRAPH_SETUPRASTER_CULLENABLE) {
