@@ -279,6 +279,22 @@ static void bind_uniforms(PGRAPHState *pg, id<MTLRenderCommandEncoder> enc,
     memset(vsh_buf, 0, vsh_size);
     memset(psh_buf, 0, psh_size);
 
+    if (getenv("XEMU_METAL_DUMP_LAYOUT")) {
+        static bool once;
+        if (!once) {
+            once = true;
+            fprintf(stderr, "vsh uniform layout (size %zu):\n", vsh_size);
+            for (size_t q = 0; q < VshUniform__COUNT; q++) {
+                fprintf(stderr,
+                        "  %-24s off=%5zu stride=%3zu  src_off=%5zu "
+                        "src_stride=%3zu count=%zu\n",
+                        VshUniformInfo[q].name, vsh_members[q].offset,
+                        vsh_members[q].stride, vsh_members[q].src_offset,
+                        vsh_members[q].src_stride, vsh_members[q].count);
+            }
+        }
+    }
+
     upload_uniforms(vsh_buf, (const uint8_t *)&vsh_values, vsh_members,
                     VshUniform__COUNT);
 
