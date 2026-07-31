@@ -930,6 +930,24 @@ static void apply_dynamic_state(NV2AState *d, id<MTLRenderCommandEncoder> enc)
         [enc setScissorRect:(MTLScissorRect){ xmin, ymin, sw, sh }];
     }
 
+    /*
+     * Polygon fill mode. The guest can ask for filled, line or point
+     * rasterisation via NV_PGRAPH_SETUPRASTER; the Vulkan backend maps it to
+     * VK_POLYGON_MODE_* and GL implements it in its geometry shader. This
+     * backend ignored it entirely and always filled.
+     */
+    PGRAPHMetalState *rs = pg->metal_renderer_state;
+    if (rs->shader_binding) {
+        int pmode = rs->shader_binding->state.geom.polygon_front_mode;
+        MTLTriangleFillMode fill = (pmode == POLY_MODE_LINE)
+                                       ? MTLTriangleFillModeLines
+                                       : MTLTriangleFillModeFill;
+        if (getenv("XEMU_METAL_FORCE_FILL")) {
+            fill = MTLTriangleFillModeFill;
+        }
+        [enc setTriangleFillMode:fill];
+    }
+
     /* Winding is reversed because clip-space y is inverted, matching GL.
      * XEMU_METAL_FLIP_WINDING tests that assumption, which was carried from
      * the first draw ever issued and never checked against a result. */
