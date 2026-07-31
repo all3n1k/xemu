@@ -77,7 +77,31 @@ MString *pgraph_metal_gen_psh(const PshState *state)
         .metal = true,
         .ubo_binding = MSL_UNIFORM_BUFFER_INDEX,
     };
-    return pgraph_glsl_gen_psh(state, opts);
+    MString *msl = pgraph_glsl_gen_psh(state, opts);
+
+    /* Counterpart of the vertex dump: emit the GLSL for the same PshState so
+     * a combiner translation fault is a textual diff. */
+    const char *dump = getenv("XEMU_METAL_DUMP_PSH");
+    if (dump) {
+        static int n;
+        if (n < 3) {
+            GenPshGlslOptions g = { .vulkan = false, .ubo_binding = 0 };
+            MString *glsl = pgraph_glsl_gen_psh(state, g);
+            char path[1024];
+            snprintf(path, sizeof(path), "%s%d.msl", dump, n);
+            FILE *f = fopen(path, "w");
+            if (f) { fputs(mstring_get_str(msl), f); fclose(f); }
+            snprintf(path, sizeof(path), "%s%d.glsl", dump, n);
+            f = fopen(path, "w");
+            if (f) { fputs(mstring_get_str(glsl), f); fclose(f); }
+            mstring_unref(glsl);
+            fprintf(stderr, "psh dumped: %d combiner stages -> %s%d.{msl,glsl}\n",
+                    state->combiner_control & 0xFF, dump, n);
+            n++;
+        }
+    }
+
+    return msl;
 }
 
 id<MTLLibrary> pgraph_metal_compile_shader(id<MTLDevice> device,
