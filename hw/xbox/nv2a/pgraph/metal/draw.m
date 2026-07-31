@@ -348,15 +348,32 @@ static void bind_uniforms(PGRAPHState *pg, id<MTLRenderCommandEncoder> enc,
      * has to go through a real buffer or the binding is rejected and the
      * shader reads nothing.
      */
+    /*
+     * Suballocate rather than reuse one buffer.
+     *
+     * Draws now accumulate in an open render pass instead of each being
+     * submitted and waited on, so overwriting a single uniform buffer per
+     * draw would rewrite the contents of draws already recorded but not yet
+     * executed: every draw in the pass would see the last draw's uniforms.
+     * A bump allocator hands each draw its own region, reset when the pass
+     * is submitted.
+     */
+    size_t vsh_aligned = ROUND_UP(vsh_size, 256);
     if (r->vsh_uniform_buffer == nil ||
-        r->vsh_uniform_buffer.length < vsh_size) {
+        r->uniform_offset + vsh_aligned > r->vsh_uniform_buffer.length) {
+        size_t want = MAX((size_t)(r->uniform_offset + vsh_aligned) * 2,
+                          (size_t)1 << 20);
         r->vsh_uniform_buffer =
-            [r->device newBufferWithLength:vsh_size
+            [r->device newBufferWithLength:want
                                    options:MTLResourceStorageModeShared];
+        r->uniform_offset = 0;
     }
-    memcpy(r->vsh_uniform_buffer.contents, vsh_buf, vsh_size);
+    size_t vsh_off = r->uniform_offset;
+    memcpy((uint8_t *)r->vsh_uniform_buffer.contents + vsh_off, vsh_buf,
+           vsh_size);
+    r->uniform_offset += vsh_aligned;
     [enc setVertexBuffer:r->vsh_uniform_buffer
-                  offset:0
+                  offset:vsh_off
                  atIndex:MSL_UNIFORM_BUFFER_INDEX];
 
     if (psh_size <= 4096) {
@@ -838,6 +855,7 @@ void pgraph_metal_flush_gpu(NV2AState *d, bool wait)
 
     [r->command_buffer commit];
     r->submits++;
+    r->uniform_offset = 0;
 
     if (wait) {
         [r->command_buffer waitUntilCompleted];

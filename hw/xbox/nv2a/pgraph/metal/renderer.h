@@ -135,6 +135,7 @@ typedef struct PGRAPHMetalState {
     /* Uniform staging. setVertexBytes: caps at 4 KB and the vertex block
      * is larger than that, so it needs a real buffer. */
     id<MTLBuffer>            vsh_uniform_buffer;
+    size_t                   uniform_offset;
     id<MTLBuffer>            psh_uniform_buffer;
 
     /* Current draw. */
