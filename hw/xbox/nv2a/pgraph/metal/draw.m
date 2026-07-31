@@ -1485,6 +1485,19 @@ void pgraph_metal_flush_draw(NV2AState *d)
                     sb->state.vsh.is_fixed_function, path);
         }
 
+        if (getenv("XEMU_METAL_NODEPTH_INDEX") &&
+            cur == atoi(getenv("XEMU_METAL_NODEPTH_INDEX"))) {
+            /* Render it, but let it not write depth: distinguishes a draw
+             * that shades wrongly from one that poisons the depth buffer
+             * for everything after it. */
+            MTLDepthStencilDescriptor *nd =
+                [[MTLDepthStencilDescriptor alloc] init];
+            nd.depthCompareFunction = MTLCompareFunctionAlways;
+            nd.depthWriteEnabled = NO;
+            [r->encoder setDepthStencilState:
+                [r->device newDepthStencilStateWithDescriptor:nd]];
+        }
+
         if (!dvs && cur == want) {
             return;
         }
