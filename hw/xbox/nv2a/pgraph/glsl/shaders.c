@@ -33,6 +33,40 @@ ShaderState pgraph_glsl_get_shader_state(PGRAPHState *pg)
     pgraph_glsl_set_geom_state(pg, &state.geom);
     pgraph_glsl_set_psh_state(pg, &state.psh);
 
+    /*
+     * XEMU_DUMP_SHADER_STATE: the state feeding the generator, printed from
+     * shared code so both backends emit it identically. The generated source
+     * has been verified to be a faithful translation, so a rendering
+     * difference between backends has to originate here or later.
+     */
+    if (getenv("XEMU_DUMP_SHADER_STATE")) {
+        static int n;
+        if (n < 24) {
+            fprintf(stderr,
+                    "SS%02d ff=%d light=%d l0=%d l1=%d norm=%d "
+                    "fog=%d fogmode=%d foggen=%d spec=%d sepspec=%d "
+                    "poly=%d/%d smooth=%d zpersp=%d "
+                    "combiners=%d alphatest=%d texmat=%d%d%d%d\n",
+                    n, state.vsh.is_fixed_function,
+                    state.vsh.fixed_function.lighting,
+                    state.vsh.fixed_function.light[0],
+                    state.vsh.fixed_function.light[1],
+                    state.vsh.fixed_function.normalization,
+                    state.vsh.fog_enable, state.vsh.fog_mode,
+                    state.vsh.fixed_function.foggen,
+                    state.vsh.specular_enable, state.vsh.separate_specular,
+                    state.geom.polygon_front_mode,
+                    state.geom.polygon_back_mode,
+                    state.vsh.smooth_shading, state.psh.z_perspective,
+                    state.psh.combiner_control & 0xFF, state.psh.alpha_test,
+                    state.vsh.fixed_function.texture_matrix_enable[0],
+                    state.vsh.fixed_function.texture_matrix_enable[1],
+                    state.vsh.fixed_function.texture_matrix_enable[2],
+                    state.vsh.fixed_function.texture_matrix_enable[3]);
+            n++;
+        }
+    }
+
     return state;
 }
 
