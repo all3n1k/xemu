@@ -264,4 +264,31 @@ void pgraph_gl_image_blit(NV2AState *d)
                                    DIRTY_MEMORY_VGA);
     memory_region_set_client_dirty(d->vram, dest_addr, clipped_dest_size,
                                    DIRTY_MEMORY_NV2A_TEX);
+
+    {
+        const char *gd = getenv("XEMU_GUESTMEM_DUMP");
+        if (gd) {
+            static int gn;
+            if (gn < 4) {
+                char gp[1024];
+                snprintf(gp, sizeof(gp), "%s_%08lx_%d.raw", gd,
+                         (unsigned long)dest_addr, gn++);
+                FILE *gf = fopen(gp, "wb");
+                if (gf) {
+                    uint32_t hdr[2] = { image_blit->width,
+                                        image_blit->height };
+                    fwrite(hdr, sizeof(hdr), 1, gf);
+                    for (unsigned int gy = 0; gy < image_blit->height; gy++) {
+                        fwrite(d->vram_ptr + dest_addr +
+                                   (size_t)gy * context_surfaces->dest_pitch,
+                               bytes_per_pixel, image_blit->width, gf);
+                    }
+                    fclose(gf);
+                    fprintf(stderr, "guestmem dumped: @%08lx %ux%u -> %s\n",
+                            (unsigned long)dest_addr, image_blit->width,
+                            image_blit->height, gp);
+                }
+            }
+        }
+    }
 }
