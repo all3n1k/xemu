@@ -289,7 +289,22 @@ static void bind_uniforms(PGRAPHState *pg, id<MTLRenderCommandEncoder> enc,
                        strtoul(uonly, NULL, 16));
     if (getenv("XEMU_METAL_DUMP_UNIFORMS") && utarget_ok) {
         static int n;
-        if (n++ < 2) {
+        /* Only the programmable draws when asked; the emblem's fault is one
+         * of those and it is not the first draw into the target. */
+        bool uprog = !getenv("XEMU_METAL_DUMP_UNIFORMS_PROG") ||
+                     !state->vsh.is_fixed_function;
+        if (uprog && n++ < 2) {
+            if (!state->vsh.is_fixed_function) {
+                /* The constants draw 3's program actually reads. */
+                const int idx[] = { 96, 97, 98, 99, 58, 59 };
+                for (int q = 0; q < 6; q++) {
+                    int k = idx[q];
+                    fprintf(stderr,
+                            "  c[%d] = %14.5f %14.5f %14.5f %14.5f\n", k,
+                            vsh_values.c[k][0], vsh_values.c[k][1],
+                            vsh_values.c[k][2], vsh_values.c[k][3]);
+                }
+            }
             fprintf(stderr, "  [ff=%d target=@%08lx binding_dim=%ux%u]\n",
                     state->vsh.is_fixed_function,
                     r->color_binding
